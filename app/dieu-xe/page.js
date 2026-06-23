@@ -124,6 +124,7 @@ export default function DieuXePage() {
   const [chotModal, setChotModal]         = useState(null); // driver name
   const [chotData, setChotData]           = useState({});   // { km_bat_dau, km_ket_thuc, ghi_chu, donHoan: Set }
   const [chotSaving, setChotSaving]       = useState(false);
+  const [chotSummary, setChotSummary]     = useState(null); // { driver, date, thieu: [{so_phieu,ten_kh,ghi_chu}] }
 
   const fetchData = useCallback(async (from, to) => {
     setLoading(true);
@@ -467,9 +468,10 @@ export default function DieuXePage() {
           km_ket_thuc: existing?.km_ket_thuc ?? '',
           ghi_chu:     existing?.ghi_chu     ?? '',
           donHoan:     new Set(),
+          donGhiChu:   {},  // { [row_key]: string } — ghi chú thiếu hàng per đơn
         });
       })
-      .catch(() => setChotData({ km_bat_dau:'', km_ket_thuc:'', ghi_chu:'', donHoan: new Set() }));
+      .catch(() => setChotData({ km_bat_dau:'', km_ket_thuc:'', ghi_chu:'', donHoan: new Set(), donGhiChu:{} }));
     setChotModal(driverName);
   };
 
@@ -482,9 +484,10 @@ export default function DieuXePage() {
     });
     setChotSaving(true);
     try {
-      // 1. Bulk update trạng thái từng đơn
+      // 1. Bulk update trạng thái + ghi chú thiếu từng đơn
       await Promise.all(orders.map(p => {
-        const isHoan = chotData.donHoan && chotData.donHoan.has(p.row_key);
+        const isHoan    = chotData.donHoan    && chotData.donHoan.has(p.row_key);
+        const ghiChuDon = chotData.donGhiChu  && chotData.donGhiChu[p.row_key];
         const cur = statusMap[p.row_key] || {};
         return fetch('/api/dispatch-status', {
           method: 'POST',
@@ -496,6 +499,7 @@ export default function DieuXePage() {
             trang_thai: isHoan ? 'huy' : 'da_giao',
             lai_xe_phan_cong:    cur.lai_xe_phan_cong    || p.lai_xe    || null,
             giao_nhan_phan_cong: cur.giao_nhan_phan_cong || p.giao_nhan || null,
+            ghi_chu_giao: ghiChuDon || null,
           }),
         });
       }));
@@ -517,11 +521,26 @@ export default function DieuXePage() {
       // 3. Cập nhật local statusMap
       const newMap = { ...statusMap };
       orders.forEach(p => {
-        const isHoan = chotData.donHoan && chotData.donHoan.has(p.row_key);
-        newMap[p.row_key] = { ...(newMap[p.row_key] || {}), trang_thai: isHoan ? 'huy' : 'da_giao' };
+        const isHoan    = chotData.donHoan   && chotData.donHoan.has(p.row_key);
+        const ghiChuDon = chotData.donGhiChu && chotData.donGhiChu[p.row_key];
+        newMap[p.row_key] = { ...(newMap[p.row_key] || {}), trang_thai: isHoan ? 'huy' : 'da_giao', ghi_chu_giao: ghiChuDon || null };
       });
       setStatusMap(newMap);
-      showToast(`✅ Chốt xong chuyến xe ${chotModal} — ${orders.length - donHoan} đơn giao, ${donHoan} hoàn`, 'ok');
+      // 4. Tổng hợp đơn thiếu hàng để gửi email kho
+      const donThieu = orders.filter(p => chotData.donGhiChu && chotData.donGhiChu[p.row_key]);
+      if (donThieu.length > 0) {
+        setChotSummary({
+          driver: chotModal,
+          date:   ngayTu,
+          thieu:  donThieu.map(p => ({
+            so_phieu: p.so_phieu,
+            ten_kh:   p.ten_kh,
+            ghi_chu:  chotData.donGhiChu[p.row_key],
+          })),
+        });
+      } else {
+        showToast(`✅ Chốt xong chuyến xe ${chotModal} — ${orders.length - donHoan} đơn giao, ${donHoan} hoàn`, 'ok');
+      }
       setChotModal(null);
     } catch (e) {
       showToast('Lỗi chốt chuyến: ' + e.message, 'error');
@@ -1229,6 +1248,54 @@ export default function DieuXePage() {
       )}
       {/* ── MODAL LỆNH ĐIỀU XE ── */}
       {/* ── MODAL CHỐT CHUYẾN ── */}
+      {/* ── MODAL TÓM TẮT THIẾU HÀNG → EMAIL KHO ── */}
+      {chotSummary && (() => {
+        const body = [
+          `Kính gửi phụ trách kho,`,
+          ``,
+          `Tổng hợp hàng thiếu ngày ${chotSummary.date} — Xe: ${chotSummary.driver}`,
+          ``,
+          ...chotSummary.thieu.map((d, i) =>
+            `${i+1}. [${d.so_phieu}] ${d.ten_kh}\n   → ${d.ghi_chu}`
+          ),
+          ``,
+          `Vui lòng kiểm tra và bổ sung trong chuyến giao tiếp theo.`,
+          `Trân trọng.`,
+        ].join('\n');
+        const mailtoLink = `mailto:?subject=${encodeURIComponent(`[Thiếu hàng] ${chotSummary.date} - Xe ${chotSummary.driver}`)}&body=${encodeURIComponent(body)}`;
+        return (
+          <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:10002, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+            <div style={{ background:'white', borderRadius:14, width:'100%', maxWidth:600, boxShadow:'0 20px 60px rgba(0,0,0,.3)' }}>
+              <div style={{ background:'#f59e0b', color:'white', padding:'14px 20px', borderRadius:'14px 14px 0 0', display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:800, fontSize:16 }}>⚠️ Thiếu hàng — cần báo kho</div>
+                  <div style={{ fontSize:12, opacity:.9 }}>{chotSummary.thieu.length} đơn có hàng thiếu · Xe {chotSummary.driver} · {chotSummary.date}</div>
+                </div>
+              </div>
+              <div style={{ padding:'16px 20px' }}>
+                <div style={{ background:'#fffbeb', border:'1px solid #fde68a', borderRadius:8, padding:12, fontFamily:'monospace', fontSize:12, whiteSpace:'pre-wrap', lineHeight:1.6, marginBottom:14, maxHeight:260, overflowY:'auto' }}>
+                  {body}
+                </div>
+                <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                  <button onClick={() => { navigator.clipboard.writeText(body); showToast('Đã copy nội dung email', 'ok'); }}
+                    style={{ padding:'8px 16px', border:'1px solid #d1d5db', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>
+                    📋 Copy nội dung
+                  </button>
+                  <a href={mailtoLink}
+                    style={{ padding:'8px 16px', background:'#1d4ed8', color:'white', borderRadius:8, fontWeight:700, fontSize:13, textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}>
+                    ✉️ Mở email
+                  </a>
+                  <button onClick={() => { setChotSummary(null); showToast(`✅ Chốt xong xe ${chotSummary.driver}`, 'ok'); }}
+                    style={{ padding:'8px 16px', background:'#059669', color:'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor:'pointer' }}>
+                    Xong ✓
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {chotModal && (() => {
         const driverInfo = driverList.find(d => d.ten === chotModal) || {};
         const orders = phieuList.filter(p => {
@@ -1298,7 +1365,7 @@ export default function DieuXePage() {
                 <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
                   <thead>
                     <tr style={{ background:'#f3f4f6' }}>
-                      {['Hoàn?','#','Số phiếu','Khách hàng','Địa chỉ','Hàng hóa'].map(h => (
+                      {['Hoàn?','#','Số phiếu','Khách hàng','Địa chỉ','Hàng hóa','Ghi chú thiếu hàng'].map(h => (
                         <th key={h} style={{ padding:'6px 8px', textAlign:'left', fontWeight:700, color:'#374151', borderBottom:'2px solid #e5e7eb', whiteSpace:'nowrap' }}>{h}</th>
                       ))}
                     </tr>
@@ -1321,10 +1388,27 @@ export default function DieuXePage() {
                           <td style={{ padding:'6px 8px', fontWeight:600, color: isHoan?'#dc2626':'#1d4ed8', textDecoration: isHoan?'line-through':'' }}>{p.so_phieu}</td>
                           <td style={{ padding:'6px 8px' }}>{p.ten_kh}</td>
                           <td style={{ padding:'6px 8px', color:'#6b7280', maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.dia_chi_giao}</td>
-                          <td style={{ padding:'6px 8px', color:'#374151' }}>
+                          <td style={{ padding:'6px 8px', color:'#374151', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                             {p.san_pham && p.san_pham.length > 0
                               ? p.san_pham.map(s => `${s.ma_sp}×${s.so_luong}`).join(', ')
                               : (p.ghi_chu ? p.ghi_chu.slice(0,40) : '—')}
+                          </td>
+                          <td style={{ padding:'4px 6px', minWidth:180 }}>
+                            <input
+                              type="text"
+                              value={(chotData.donGhiChu && chotData.donGhiChu[p.row_key]) || ''}
+                              onChange={e => setChotData(prev => ({
+                                ...prev,
+                                donGhiChu: { ...prev.donGhiChu, [p.row_key]: e.target.value }
+                              }))}
+                              placeholder="VD: thiếu 2 A4 70g..."
+                              style={{
+                                width:'100%', padding:'4px 7px', fontSize:11,
+                                border: (chotData.donGhiChu && chotData.donGhiChu[p.row_key]) ? '1px solid #f59e0b' : '1px solid #e5e7eb',
+                                borderRadius:5, outline:'none',
+                                background: (chotData.donGhiChu && chotData.donGhiChu[p.row_key]) ? '#fffbeb' : 'white',
+                              }}
+                            />
                           </td>
                         </tr>
                       );
@@ -1333,12 +1417,18 @@ export default function DieuXePage() {
                 </table>
 
                 {/* Summary */}
-                <div style={{ display:'flex', gap:16, marginTop:12, padding:'10px 14px', background:'#f9fafb', borderRadius:8, fontSize:12 }}>
-                  <span>📦 Tổng: <b>{orders.length}</b> đơn</span>
-                  <span style={{ color:'#059669' }}>✅ Giao: <b>{orders.length - donHoan.size}</b></span>
-                  <span style={{ color:'#dc2626' }}>↩️ Hoàn: <b>{donHoan.size}</b></span>
-                  {kmThucTe != null && <span style={{ color:'#1d4ed8' }}>🛣️ <b>{kmThucTe} km</b></span>}
-                </div>
+                {(() => {
+                  const donThieuCount = Object.values(chotData.donGhiChu || {}).filter(v => v && v.trim()).length;
+                  return (
+                    <div style={{ display:'flex', gap:16, marginTop:12, padding:'10px 14px', background:'#f9fafb', borderRadius:8, fontSize:12, flexWrap:'wrap' }}>
+                      <span>📦 Tổng: <b>{orders.length}</b> đơn</span>
+                      <span style={{ color:'#059669' }}>✅ Giao đủ: <b>{orders.length - donHoan.size - donThieuCount}</b></span>
+                      {donThieuCount > 0 && <span style={{ color:'#f59e0b', fontWeight:700 }}>⚠️ Thiếu hàng: <b>{donThieuCount}</b> đơn → sẽ tổng hợp email kho</span>}
+                      <span style={{ color:'#dc2626' }}>↩️ Hoàn: <b>{donHoan.size}</b></span>
+                      {kmThucTe != null && <span style={{ color:'#1d4ed8' }}>🛣️ <b>{kmThucTe} km</b></span>}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Footer */}

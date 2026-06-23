@@ -35,7 +35,7 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const { row_key, bo_phan, ngay_giao, trang_thai, ghi_chu,
-            lai_xe_phan_cong, giao_nhan_phan_cong } = body;
+            lai_xe_phan_cong, giao_nhan_phan_cong, ghi_chu_giao } = body;
 
     if (!row_key) return NextResponse.json({ error: 'Thiếu row_key' }, { status: 400 });
 
@@ -52,6 +52,7 @@ export async function POST(request) {
     if (ghi_chu !== undefined) payload.ghi_chu               = ghi_chu || null;
     if (lai_xe_phan_cong      !== undefined) payload.lai_xe_phan_cong      = lai_xe_phan_cong      || null;
     if (giao_nhan_phan_cong   !== undefined) payload.giao_nhan_phan_cong   = giao_nhan_phan_cong   || null;
+    if (ghi_chu_giao          !== undefined) payload.ghi_chu_giao          = ghi_chu_giao          || null;
 
     const { data, error } = await supabase
       .from('dispatch_status')
