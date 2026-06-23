@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase';
 // PATCH /api/drivers/[id] → cập nhật thông tin lái xe
 export async function PATCH(request, { params }) {
   try {
-    const id   = params.id;
+    const { id } = await params;
     const body = await request.json();
     const allowed = ['ten', 'vai_tro', 'dien_thoai', 'bien_so', 'suc_tai_thung', 'suc_tai_kg', 'active'];
     const updates = {};
@@ -38,11 +38,12 @@ export async function PATCH(request, { params }) {
 // DELETE /api/drivers/[id] → vô hiệu hoá (active = false)
 export async function DELETE(request, { params }) {
   try {
+    const { id } = await params;
     const supabase = createAdminClient();
     const { error } = await supabase
       .from('drivers')
       .update({ active: false })
-      .eq('id', params.id);
+      .eq('id', id);
     if (error) throw error;
     return NextResponse.json({ ok: true });
   } catch (err) {
