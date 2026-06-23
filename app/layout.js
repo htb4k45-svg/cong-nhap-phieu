@@ -22,6 +22,7 @@ export default function RootLayout({ children }) {
             <nav className="ml-auto flex gap-4 text-sm">
               <Link href="/" className="text-gray-600 hover:text-blue-600 font-medium">📋 Nhập phiếu</Link>
               <Link href="/dieu-xe" className="text-gray-600 hover:text-blue-600 font-medium">🚚 Điều xe</Link>
+              <Link href="/bao-cao-xe" className="text-gray-600 hover:text-blue-600 font-medium">📊 Báo cáo xe</Link>
               <Link href="/import" className="text-gray-600 hover:text-blue-600 font-medium">📤 Import Excel</Link>
             </nav>
           </div>
