@@ -796,8 +796,8 @@ export default function DieuXePage() {
                                     {driverList
                                       .filter(d => d.vai_tro === 'lai_xe' || d.vai_tro === 'ca_hai')
                                       .map(d => <option key={d.id} value={d.ten}>{d.ten}</option>)}
-                                    {/* Giữ lại tên từ sheet nếu không có trong DB */}
-                                    {fromSheet && !driverList.find(d=>d.ten===fromSheet) && (
+                                    {/* Giữ lại tên từ sheet nếu không có trong DB (so sánh không phân biệt unicode) */}
+                                    {fromSheet && !driverList.find(d=>d.ten.normalize('NFC').trim().toUpperCase()===fromSheet.normalize('NFC').trim().toUpperCase()) && (
                                       <option value={fromSheet}>{fromSheet}</option>
                                     )}
                                   </select>
@@ -831,7 +831,7 @@ export default function DieuXePage() {
                                     {driverList
                                       .filter(d => d.vai_tro === 'giao_nhan' || d.vai_tro === 'ca_hai')
                                       .map(d => <option key={d.id} value={d.ten}>{d.ten}</option>)}
-                                    {fromSheet && !driverList.find(d=>d.ten===fromSheet) && (
+                                    {fromSheet && !driverList.find(d=>d.ten.normalize('NFC').trim().toUpperCase()===fromSheet.normalize('NFC').trim().toUpperCase()) && (
                                       <option value={fromSheet}>{fromSheet}</option>
                                     )}
                                   </select>
