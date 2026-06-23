@@ -111,6 +111,7 @@ export default function DieuXePage() {
   const [filterBP, setFilterBP]       = useState('TAT_CA');
   const [filterTT, setFilterTT]       = useState('TAT_CA');
   const [filterLaiXe, setFilterLaiXe] = useState(null);
+  const [searchQ, setSearchQ]         = useState('');
   const [groupByArea, setGroupByArea] = useState(true);
   const [lastFetch, setLastFetch]     = useState(null);
   const [huyenList, setHuyenList]     = useState([]);
@@ -250,15 +251,35 @@ export default function DieuXePage() {
     }
   };
 
-  const filtered = useMemo(() => phieuList.filter(function(p) {
-    if (filterBP !== 'TAT_CA' && p.bo_phan !== filterBP) return false;
-    if (filterTT !== 'TAT_CA' && getTT(p) !== filterTT) return false;
-    if (filterLaiXe) {
-      const lx = p.lai_xe || p.giao_nhan || 'Chua phan cong';
-      if (lx !== filterLaiXe) return false;
-    }
-    return true;
-  }), [phieuList, filterBP, filterTT, filterLaiXe, getTT]);
+  const filtered = useMemo(() => {
+    const q = normVN(searchQ);
+    const list = phieuList.filter(function(p) {
+      if (filterBP !== 'TAT_CA' && p.bo_phan !== filterBP) return false;
+      if (filterTT !== 'TAT_CA' && getTT(p) !== filterTT) return false;
+      if (filterLaiXe) {
+        const lx = p.lai_xe || p.giao_nhan || 'Chua phan cong';
+        if (lx !== filterLaiXe) return false;
+      }
+      if (q) {
+        const hay = normVN((p.so_phieu||'') + ' ' + (p.ten_kh||'') + ' ' + (p.ma_lenh||''));
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    // Sort: chưa có dispatch_status (mới nhất, chưa phân) lên trên,
+    // sau đó theo updated_at DESC (mới cập nhật gần đây nhất)
+    list.sort(function(a, b) {
+      const sa = statusMap[a.row_key];
+      const sb = statusMap[b.row_key];
+      // Chưa có status → ưu tiên lên trên
+      if (!sa && sb) return -1;
+      if (sa && !sb) return 1;
+      if (!sa && !sb) return 0;
+      // Cả hai có status → so updated_at mới hơn lên trên
+      return new Date(sb.updated_at) - new Date(sa.updated_at);
+    });
+    return list;
+  }, [phieuList, filterBP, filterTT, filterLaiXe, searchQ, statusMap, getTT]);
 
   const stats = useMemo(() => {
     const total = phieuList.length;
@@ -350,7 +371,11 @@ export default function DieuXePage() {
       <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:16, flexWrap:'wrap' }}>
         <Link href="/" style={{ fontSize:13, color:'#3b82f6', textDecoration:'none' }}>← Nhập phiếu</Link>
         <Link href="/bao-cao" style={{ fontSize:13, color:'#93c5fd', textDecoration:'none' }}>📊 Báo cáo</Link>
-        <Link href="/quan-ly-xe" style={{ fontSize:13, color:'#10b981', textDecoration:'none' }}>🚗 Quản lý xe</Link>
+        <Link href="/quan-ly-xe" style={{
+          fontSize:12, color:'white', textDecoration:'none',
+          background:'#059669', padding:'5px 12px', borderRadius:6,
+          fontWeight:700, border:'1px solid #047857',
+        }}>🚗 Quản lý xe</Link>
         <span style={{ color:'#d1d5db' }}>|</span>
         <h2 style={{ fontSize:20, fontWeight:700, margin:0 }}>🚚 Điều xe</h2>
         {lastFetch && <span style={{ fontSize:11, color:'#9ca3af' }}>Cập nhật {lastFetch}</span>}
@@ -542,6 +567,23 @@ export default function DieuXePage() {
           background: groupByArea ? '#eff6ff' : 'white',
           color: groupByArea ? '#1d4ed8' : '#6b7280',
         }}>📍 Nhóm khu vực {groupByArea ? '✓' : ''}</button>
+        <div style={{ position:'relative', marginLeft:'auto' }}>
+          <input
+            value={searchQ}
+            onChange={e => setSearchQ(e.target.value)}
+            placeholder="🔍 Số phiếu / tên khách..."
+            style={{
+              padding:'5px 32px 5px 10px', borderRadius:8, border:'1px solid #d1d5db',
+              fontSize:12, width:220, outline:'none',
+            }}
+          />
+          {searchQ && (
+            <button onClick={() => setSearchQ('')} style={{
+              position:'absolute', right:6, top:'50%', transform:'translateY(-50%)',
+              border:'none', background:'none', cursor:'pointer', color:'#9ca3af', fontSize:14, padding:0,
+            }}>✕</button>
+          )}
+        </div>
         {filterLaiXe && (
           <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 10px', background:'#eff6ff', border:'1px solid #bfdbfe', borderRadius:8 }}>
             <span style={{ fontSize:12, color:'#1d4ed8', fontWeight:600 }}>🔍 {filterLaiXe}</span>
