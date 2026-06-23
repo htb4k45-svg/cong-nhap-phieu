@@ -30,29 +30,56 @@ export async function GET(request) {
   }
 }
 
-// POST /api/dispatch-status  → upsert trạng thái
+// POST /api/dispatch-status  → upsert trạng thái + phân công lái xe
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { row_key, bo_phan, ngay_giao, trang_thai, ghi_chu } = body;
+    const { row_key, bo_phan, ngay_giao, trang_thai, ghi_chu,
+            lai_xe_phan_cong, giao_nhan_phan_cong } = body;
 
     if (!row_key) return NextResponse.json({ error: 'Thiếu row_key' }, { status: 400 });
 
     const supabase = createAdminClient();
+
+    // Build upsert payload — chỉ ghi đè field được gửi lên
+    const payload = {
+      row_key,
+      bo_phan:   bo_phan   || null,
+      ngay_giao: ngay_giao || null,
+      updated_at: new Date().toISOString(),
+    };
+    if (trang_thai)            payload.trang_thai            = trang_thai;
+    if (ghi_chu !== undefined) payload.ghi_chu               = ghi_chu || null;
+    if (lai_xe_phan_cong      !== undefined) payload.lai_xe_phan_cong      = lai_xe_phan_cong      || null;
+    if (giao_nhan_phan_cong   !== undefined) payload.giao_nhan_phan_cong   = giao_nhan_phan_cong   || null;
+
     const { data, error } = await supabase
       .from('dispatch_status')
-      .upsert({
-        row_key,
-        bo_phan:   bo_phan   || null,
-        ngay_giao: ngay_giao || null,
-        trang_thai: trang_thai || 'cho_giao',
-        ghi_chu:   ghi_chu   || null,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'row_key' })
+      .upsert(payload, { onConflict: 'row_key' })
       .select()
       .single();
 
     if (error) throw new Error(error.message);
+
+    // ── Ghi ngược lại Google Sheet (nếu có phân công lái xe mới) ─────────────
+    const scriptUrl = process.env.APPS_SCRIPT_WRITE_URL;
+    const hasAssignment = lai_xe_phan_cong !== undefined || giao_nhan_phan_cong !== undefined;
+    if (scriptUrl && hasAssignment) {
+      // Fire-and-forget — không block response
+      fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          row_key,
+          so_phieu:   row_key,
+          bo_phan:    bo_phan || 'B2B',
+          lai_xe:     lai_xe_phan_cong,
+          giao_nhan:  giao_nhan_phan_cong,
+          ngay_giao:  ngay_giao || null,
+        }),
+      }).catch(e => console.warn('Apps Script write failed:', e.message));
+    }
+
     return NextResponse.json({ data });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });

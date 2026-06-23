@@ -143,6 +143,8 @@ export default function DieuXePage() {
   const [groupByArea, setGroupByArea] = useState(true);
   const [lastFetch, setLastFetch]     = useState(null);
   const [huyenList, setHuyenList]     = useState([]);  // dữ liệu quận/huyện từ DB
+  const [driverList, setDriverList]   = useState([]);  // danh sách lái xe từ DB
+  const [assigningKey, setAssigningKey] = useState(null); // row_key đang lưu phân công
 
   // ── Fetch dữ liệu ──────────────────────────────────────────────────────────
 
@@ -174,11 +176,18 @@ export default function DieuXePage() {
     fetch('/api/phuong-xa?list=1')
       .then(r => r.json())
       .then(d => {
-        // Schema mới: d.wards; schema cũ: d.huyens (backward compat)
         const list = d.wards || d.huyens || [];
         if (list.length > 0) setHuyenList(list);
       })
-      .catch(() => {}); // Silently ignore — DB chưa có data thì dùng regex fallback
+      .catch(() => {});
+  }, []);
+
+  // Load danh sách lái xe từ DB (1 lần khi mount)
+  useEffect(() => {
+    fetch('/api/drivers')
+      .then(r => r.json())
+      .then(d => { if (d.drivers?.length > 0) setDriverList(d.drivers); })
+      .catch(() => {});
   }, []);
 
   // ── Chuyển trạng thái ───────────────────────────────────────────────────────
@@ -223,6 +232,39 @@ export default function DieuXePage() {
   // ── Helper ─────────────────────────────────────────────────────────────────
 
   const getTT = useCallback((p) => statusMap[p.row_key]?.trang_thai || 'cho_giao', [statusMap]);
+
+  // ── Phân công lái xe ────────────────────────────────────────────────────────
+
+  const assignLaiXe = async (phieu, field, value) => {
+    // field: 'lai_xe_phan_cong' | 'giao_nhan_phan_cong'
+    setAssigningKey(phieu.row_key + '_' + field);
+    const cur = statusMap[phieu.row_key] || {};
+    const newStatus = {
+      ...cur,
+      [field]: value || null,
+    };
+    try {
+      const res = await fetch('/api/dispatch-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          row_key:    phieu.row_key,
+          bo_phan:    phieu.bo_phan,
+          ngay_giao:  phieu.ngay_can_giao || ngayTu,
+          trang_thai: cur.trang_thai || 'cho_giao',
+          [field]:    value || null,
+        }),
+      });
+      const json = await res.json();
+      if (json.data) {
+        setStatusMap(m => ({ ...m, [phieu.row_key]: { ...m[phieu.row_key], ...json.data } }));
+      }
+    } catch (e) {
+      console.error('assignLaiXe error:', e);
+    } finally {
+      setAssigningKey(null);
+    }
+  };
 
   // ── Computed values ────────────────────────────────────────────────────────
 
@@ -730,12 +772,73 @@ export default function DieuXePage() {
                               })()}
                             </td>
 
-                            <td style={{ padding:'9px 10px', fontSize:12, color:'#374151', whiteSpace:'nowrap' }}>
-                              {p.lai_xe || <span style={{ color:'#d1d5db' }}>—</span>}
+                            {/* Lái xe — dropdown nếu có danh sách, text nếu không */}
+                            <td style={{ padding:'6px 8px' }}>
+                              {driverList.length > 0 ? (() => {
+                                const assigned = statusMap[p.row_key]?.lai_xe_phan_cong;
+                                const fromSheet = p.lai_xe;
+                                const display   = assigned ?? fromSheet ?? '';
+                                const isSaving  = assigningKey === p.row_key + '_lai_xe_phan_cong';
+                                return (
+                                  <select
+                                    value={display}
+                                    disabled={isSaving}
+                                    onChange={e => assignLaiXe(p, 'lai_xe_phan_cong', e.target.value)}
+                                    style={{
+                                      fontSize:11, padding:'3px 6px', borderRadius:5,
+                                      border: assigned ? '1px solid #6366f1' : '1px solid #d1d5db',
+                                      background: assigned ? '#eef2ff' : 'white',
+                                      color: assigned ? '#4f46e5' : '#374151',
+                                      minWidth:90, cursor:'pointer', opacity: isSaving ? 0.5 : 1,
+                                    }}
+                                  >
+                                    <option value=''>— chọn —</option>
+                                    {driverList
+                                      .filter(d => d.vai_tro === 'lai_xe' || d.vai_tro === 'ca_hai')
+                                      .map(d => <option key={d.id} value={d.ten}>{d.ten}</option>)}
+                                    {/* Giữ lại tên từ sheet nếu không có trong DB */}
+                                    {fromSheet && !driverList.find(d=>d.ten===fromSheet) && (
+                                      <option value={fromSheet}>{fromSheet}</option>
+                                    )}
+                                  </select>
+                                );
+                              })() : (
+                                <span style={{ fontSize:12, color:'#374151' }}>{p.lai_xe || <span style={{color:'#d1d5db'}}>—</span>}</span>
+                              )}
                             </td>
 
-                            <td style={{ padding:'9px 10px', fontSize:12, color:'#374151', whiteSpace:'nowrap' }}>
-                              {p.giao_nhan || <span style={{ color:'#d1d5db' }}>—</span>}
+                            {/* Giao nhận — dropdown */}
+                            <td style={{ padding:'6px 8px' }}>
+                              {driverList.length > 0 ? (() => {
+                                const assigned = statusMap[p.row_key]?.giao_nhan_phan_cong;
+                                const fromSheet = p.giao_nhan;
+                                const display   = assigned ?? fromSheet ?? '';
+                                const isSaving  = assigningKey === p.row_key + '_giao_nhan_phan_cong';
+                                return (
+                                  <select
+                                    value={display}
+                                    disabled={isSaving}
+                                    onChange={e => assignLaiXe(p, 'giao_nhan_phan_cong', e.target.value)}
+                                    style={{
+                                      fontSize:11, padding:'3px 6px', borderRadius:5,
+                                      border: assigned ? '1px solid #6366f1' : '1px solid #d1d5db',
+                                      background: assigned ? '#eef2ff' : 'white',
+                                      color: assigned ? '#4f46e5' : '#374151',
+                                      minWidth:90, cursor:'pointer', opacity: isSaving ? 0.5 : 1,
+                                    }}
+                                  >
+                                    <option value=''>— chọn —</option>
+                                    {driverList
+                                      .filter(d => d.vai_tro === 'giao_nhan' || d.vai_tro === 'ca_hai')
+                                      .map(d => <option key={d.id} value={d.ten}>{d.ten}</option>)}
+                                    {fromSheet && !driverList.find(d=>d.ten===fromSheet) && (
+                                      <option value={fromSheet}>{fromSheet}</option>
+                                    )}
+                                  </select>
+                                );
+                              })() : (
+                                <span style={{ fontSize:12, color:'#374151' }}>{p.giao_nhan || <span style={{color:'#d1d5db'}}>—</span>}</span>
+                              )}
                             </td>
                           </tr>
                         );
