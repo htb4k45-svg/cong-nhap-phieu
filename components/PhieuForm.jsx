@@ -30,12 +30,13 @@ const DAC_DIEM_MAP = {
 export default function PhieuForm() {
   // ── State form ──
   const [form, setForm] = useState({
+    bo_phan:       '',
+    ma_lenh:       '',
     ngay_nhap:     today(),
     so_phieu:      '',
     ma_kh:         '',
     ten_kh:        '',
     dia_chi_giao:  '',
-    bo_phan:       '',
     ma_kho:        '',
     ten_kho:       '',
     kho_custom:    false,
@@ -44,6 +45,8 @@ export default function PhieuForm() {
     so_phieu_goc:  '',
     ghi_chu:       '',
   });
+
+  const coMaLenh = ['MT', 'GT'].includes(form.bo_phan);
 
   const [nguoiNhanList, setNguoiNhanList] = useState([newNguoiNhan()]);
   const [sanPhamList,   setSanPhamList]   = useState([newSanPham()]);
@@ -342,86 +345,130 @@ export default function PhieuForm() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        {/* ─── 1. Thông tin cơ bản ─── */}
+        {/* ─── 1. Thông tin phiếu ─── */}
         <div className="section-card">
           <h2 className="section-title">1. Thông tin phiếu</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <label className="label">Ngày nhập phiếu *</label>
-              <input type="date" className="input-field"
-                value={form.ngay_nhap}
-                onChange={e => setField('ngay_nhap', e.target.value)} required />
-            </div>
-            <div>
-              <label className="label">Số phiếu *</label>
-              <input type="text" className="input-field" placeholder="VD: PX-2024-001"
-                value={form.so_phieu}
-                onChange={e => setField('so_phieu', e.target.value)} required />
-            </div>
-            <div>
-              <label className="label">Bộ phận lên đơn *</label>
-              <div className="flex gap-2">
-                {['MT', 'GT', 'B2B'].map(bp => (
-                  <button key={bp} type="button"
-                    onClick={() => setField('bo_phan', bp)}
-                    className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-colors
-                      ${form.bo_phan === bp
-                        ? bp === 'MT' ? 'bg-purple-600 text-white border-purple-600'
-                          : bp === 'GT' ? 'bg-green-600 text-white border-green-600'
-                          : 'bg-orange-500 text-white border-orange-500'
-                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                      }`}>
-                    {bp}
-                  </button>
-                ))}
-              </div>
+
+          {/* Bộ phận — LUÔN HIỆN ĐẦU TIÊN */}
+          <div className="mb-5">
+            <label className="label">Bộ phận lên đơn *</label>
+            <div className="flex gap-2 max-w-xs">
+              {['MT', 'GT', 'B2B'].map(bp => (
+                <button key={bp} type="button"
+                  onClick={() => setField('bo_phan', bp)}
+                  className={`flex-1 py-2.5 rounded-lg text-sm font-bold border-2 transition-colors
+                    ${form.bo_phan === bp
+                      ? bp === 'MT' ? 'bg-purple-600 text-white border-purple-600'
+                        : bp === 'GT' ? 'bg-green-600 text-white border-green-600'
+                        : 'bg-orange-500 text-white border-orange-500'
+                      : 'bg-white text-gray-500 border-gray-200 hover:border-gray-400'
+                    }`}>
+                  {bp}
+                </button>
+              ))}
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-            {/* Mã + Tên khách hàng */}
-            <div>
-              <label className="label">Mã khách hàng</label>
-              <div className="relative">
-                <input type="text" className="input-field pr-8" placeholder="VD: KH-001"
-                  value={form.ma_kh}
-                  onChange={e => setField('ma_kh', e.target.value)} />
-                {khLookup === 'found' && (
-                  <span className="absolute right-2 top-2.5 text-green-500 text-xs">✓</span>
-                )}
-              </div>
-              {khLookup === 'not_found' && (
-                <p className="text-xs text-amber-600 mt-1">⚠ Không tìm thấy trong danh sách</p>
+          {/* Chỉ hiện phần còn lại khi đã chọn bộ phận */}
+          {form.bo_phan && (
+            <>
+              {/* MT / GT: Mã Lệnh → Số Phiếu (parent-child) */}
+              {coMaLenh && (
+                <div className="mb-5">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">Mã Lệnh *</label>
+                      <input type="text" className="input-field" placeholder="VD: ML-2024-001"
+                        value={form.ma_lenh}
+                        onChange={e => setField('ma_lenh', e.target.value)} required={coMaLenh} />
+                    </div>
+                    <div>
+                      <label className="label">Ngày nhập phiếu *</label>
+                      <input type="date" className="input-field"
+                        value={form.ngay_nhap}
+                        onChange={e => setField('ngay_nhap', e.target.value)} required />
+                    </div>
+                  </div>
+
+                  {/* Số Phiếu — con của Mã Lệnh */}
+                  <div className="mt-3 ml-6 pl-4 border-l-2 border-purple-200">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs text-purple-500 font-medium">↳ Phiếu thuộc Mã Lệnh {form.ma_lenh || '...'}</span>
+                    </div>
+                    <div className="max-w-sm">
+                      <label className="label">Số phiếu *</label>
+                      <input type="text" className="input-field" placeholder="VD: PX-2024-001"
+                        value={form.so_phieu}
+                        onChange={e => setField('so_phieu', e.target.value)} required />
+                    </div>
+                  </div>
+                </div>
               )}
-            </div>
-            <div>
-              <label className="label">Tên khách hàng *</label>
-              <input type="text" className="input-field" placeholder="Tự động hoặc nhập tay"
-                value={form.ten_kh}
-                onChange={e => setField('ten_kh', e.target.value)} required />
-            </div>
-            <div className="flex items-end">
-              <label className="btn-secondary cursor-pointer w-full text-center text-xs">
-                📤 Import Excel KH
-                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportKH} />
-              </label>
-            </div>
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-            <div>
-              <label className="label">Địa chỉ giao hàng</label>
-              <input type="text" className="input-field" placeholder="Địa chỉ nhận hàng"
-                value={form.dia_chi_giao}
-                onChange={e => setField('dia_chi_giao', e.target.value)} />
-            </div>
-            <div>
-              <label className="label">Ngày cần giao</label>
-              <input type="date" className="input-field"
-                value={form.ngay_can_giao}
-                onChange={e => setField('ngay_can_giao', e.target.value)} />
-            </div>
-          </div>
+              {/* B2B: Ngày nhập + Số Phiếu bình thường */}
+              {form.bo_phan === 'B2B' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+                  <div>
+                    <label className="label">Ngày nhập phiếu *</label>
+                    <input type="date" className="input-field"
+                      value={form.ngay_nhap}
+                      onChange={e => setField('ngay_nhap', e.target.value)} required />
+                  </div>
+                  <div>
+                    <label className="label">Số phiếu *</label>
+                    <input type="text" className="input-field" placeholder="VD: PX-2024-001"
+                      value={form.so_phieu}
+                      onChange={e => setField('so_phieu', e.target.value)} required />
+                  </div>
+                </div>
+              )}
+
+              {/* Thông tin khách hàng */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="label">Mã khách hàng</label>
+                  <div className="relative">
+                    <input type="text" className="input-field pr-8" placeholder="VD: KH-001"
+                      value={form.ma_kh}
+                      onChange={e => setField('ma_kh', e.target.value)} />
+                    {khLookup === 'found' && (
+                      <span className="absolute right-2 top-2.5 text-green-500 text-xs">✓</span>
+                    )}
+                  </div>
+                  {khLookup === 'not_found' && (
+                    <p className="text-xs text-amber-600 mt-1">⚠ Không tìm thấy trong danh sách</p>
+                  )}
+                </div>
+                <div>
+                  <label className="label">Tên khách hàng *</label>
+                  <input type="text" className="input-field" placeholder="Tự động hoặc nhập tay"
+                    value={form.ten_kh}
+                    onChange={e => setField('ten_kh', e.target.value)} required />
+                </div>
+                <div className="flex items-end">
+                  <label className="btn-secondary cursor-pointer w-full text-center text-xs">
+                    📤 Import Excel KH
+                    <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportKH} />
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div>
+                  <label className="label">Địa chỉ giao hàng</label>
+                  <input type="text" className="input-field" placeholder="Địa chỉ nhận hàng"
+                    value={form.dia_chi_giao}
+                    onChange={e => setField('dia_chi_giao', e.target.value)} />
+                </div>
+                <div>
+                  <label className="label">Ngày cần giao</label>
+                  <input type="date" className="input-field"
+                    value={form.ngay_can_giao}
+                    onChange={e => setField('ngay_can_giao', e.target.value)} />
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* ─── 2. Kho xuất ─── */}

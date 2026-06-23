@@ -8,7 +8,7 @@ export async function POST(request) {
     const supabase = createAdminClient();
 
     const {
-      ngay_nhap, so_phieu, ma_kh, ten_kh, dia_chi_giao,
+      ngay_nhap, so_phieu, ma_lenh, ma_kh, ten_kh, dia_chi_giao,
       bo_phan, ma_kho, ten_kho, ngay_can_giao,
       dac_diem, so_phieu_goc, ghi_chu,
       nguoi_nhan, san_pham,
@@ -26,7 +26,7 @@ export async function POST(request) {
     const { data: phieu, error: phieuErr } = await supabase
       .from('phieu')
       .insert({
-        ngay_nhap, so_phieu, ma_kh: ma_kh || null, ten_kh,
+        ngay_nhap, so_phieu, ma_lenh: ma_lenh || null, ma_kh: ma_kh || null, ten_kh,
         dia_chi_giao, bo_phan, ma_kho, ten_kho,
         ngay_can_giao: ngay_can_giao || null,
         dac_diem, so_phieu_goc: so_phieu_goc || null,
@@ -91,6 +91,15 @@ export async function GET(request) {
     }
     if (searchParams.get('ma_kh')) {
       query = query.eq('ma_kh', searchParams.get('ma_kh'));
+    }
+    if (searchParams.get('ngay_giao')) {
+      query = query.eq('ngay_can_giao', searchParams.get('ngay_giao'));
+    }
+    if (searchParams.get('bo_phan')) {
+      query = query.eq('bo_phan', searchParams.get('bo_phan'));
+    }
+    if (searchParams.get('trang_thai_giao')) {
+      query = query.eq('trang_thai_giao', searchParams.get('trang_thai_giao'));
     }
 
     const { data, error, count } = await query;
