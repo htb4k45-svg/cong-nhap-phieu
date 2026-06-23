@@ -296,9 +296,10 @@ export default function DieuXePage() {
       if (tt === 'da_giao')   byBP[bp].da++;
     });
 
+    // Lái xe (cột lai_xe trong sheet)
     const byLaiXe = {};
     phieuList.forEach(p => {
-      const lx = p.lai_xe || p.giao_nhan || 'Chưa phân công';
+      const lx = p.lai_xe || 'Chưa phân công';
       if (!byLaiXe[lx]) byLaiXe[lx] = { total:0, cho:0, dang:0, da:0 };
       byLaiXe[lx].total++;
       const tt = getTT(p);
@@ -307,7 +308,19 @@ export default function DieuXePage() {
       if (tt === 'da_giao')   byLaiXe[lx].da++;
     });
 
-    return { total, cho, dang, da, pct, byBP, byLaiXe };
+    // Phụ xe / Giao nhận (cột giao_nhan trong sheet)
+    const byGiaoNhan = {};
+    phieuList.forEach(p => {
+      const gn = p.giao_nhan || 'Chưa phân công';
+      if (!byGiaoNhan[gn]) byGiaoNhan[gn] = { total:0, cho:0, dang:0, da:0 };
+      byGiaoNhan[gn].total++;
+      const tt = getTT(p);
+      if (tt === 'cho_giao')  byGiaoNhan[gn].cho++;
+      if (tt === 'dang_giao') byGiaoNhan[gn].dang++;
+      if (tt === 'da_giao')   byGiaoNhan[gn].da++;
+    });
+
+    return { total, cho, dang, da, pct, byBP, byLaiXe, byGiaoNhan };
   }, [phieuList, getTT]);
 
   // Build matcher function từ dữ liệu DB
@@ -468,56 +481,57 @@ export default function DieuXePage() {
             }
           </div>
 
-          {/* Theo lái xe */}
-          <div>
-            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
-              <span style={{ fontSize:11, fontWeight:700, color:'#9ca3af', textTransform:'uppercase', letterSpacing:'.06em' }}>
-                Theo lái xe / giao nhận
-              </span>
-              {filterLaiXe && (
-                <button onClick={()=>setFilterLaiXe(null)} style={{
-                  fontSize:11, padding:'1px 8px', borderRadius:10, border:'1px solid #fca5a5',
-                  background:'#fee2e2', color:'#dc2626', cursor:'pointer', fontWeight:600,
-                }}>
-                  ✕ Bỏ lọc
-                </button>
-              )}
-            </div>
-            {Object.keys(stats.byLaiXe).length === 0
-              ? <div style={{ fontSize:12, color:'#d1d5db' }}>Chưa có dữ liệu</div>
-              : (
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px,1fr))', gap:8 }}>
-                  {Object.entries(stats.byLaiXe)
+          {/* Theo lái xe + giao nhận — 2 nhóm riêng */}
+          <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+
+            {/* Helper render card */}
+            {[
+              { label:'🚗 Lái xe', data: stats.byLaiXe, accentColor:'#1d4ed8', accentBg:'#eff6ff', borderSel:'#3b82f6' },
+              { label:'📦 Phụ xe / Giao nhận', data: stats.byGiaoNhan, accentColor:'#b45309', accentBg:'#fffbeb', borderSel:'#f59e0b' },
+            ].map(({ label, data, accentColor, accentBg, borderSel }) => (
+              <div key={label}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+                  <span style={{ fontSize:11, fontWeight:700, color:'#9ca3af', textTransform:'uppercase', letterSpacing:'.06em' }}>
+                    {label}
+                  </span>
+                  {filterLaiXe && (
+                    <button onClick={()=>setFilterLaiXe(null)} style={{
+                      fontSize:11, padding:'1px 8px', borderRadius:10, border:'1px solid #fca5a5',
+                      background:'#fee2e2', color:'#dc2626', cursor:'pointer', fontWeight:600,
+                    }}>✕ Bỏ lọc</button>
+                  )}
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px,1fr))', gap:6 }}>
+                  {Object.entries(data)
+                    .filter(([name]) => name !== 'Chưa phân công')
                     .sort((a,b) => b[1].total - a[1].total)
-                    .map(([lx, d]) => {
+                    .map(([name, d]) => {
                       const pct      = d.total ? Math.round(d.da / d.total * 100) : 0;
-                      const selected = filterLaiXe === lx;
+                      const selected = filterLaiXe === name;
                       return (
-                        <div key={lx}
-                          onClick={() => setFilterLaiXe(selected ? null : lx)}
-                          title={selected ? 'Bấm để bỏ lọc' : `Xem đơn của ${lx}`}
+                        <div key={name}
+                          onClick={() => setFilterLaiXe(selected ? null : name)}
                           style={{
-                            background: selected ? '#eff6ff' : '#f9fafb',
-                            borderRadius:8, padding:'8px 12px', cursor:'pointer',
-                            border: selected ? '2px solid #3b82f6' : '1px solid #e5e7eb',
-                            transition:'box-shadow .15s',
-                            boxShadow: selected ? '0 0 0 3px #bfdbfe' : 'none',
+                            background: selected ? accentBg : '#f9fafb',
+                            borderRadius:8, padding:'7px 10px', cursor:'pointer',
+                            border: selected ? `2px solid ${borderSel}` : '1px solid #e5e7eb',
+                            boxShadow: selected ? `0 0 0 2px ${borderSel}44` : 'none',
+                            transition:'border-color .15s',
                           }}
-                          onMouseEnter={e => { if(!selected) e.currentTarget.style.borderColor='#93c5fd'; }}
+                          onMouseEnter={e => { if(!selected) e.currentTarget.style.borderColor=borderSel; }}
                           onMouseLeave={e => { if(!selected) e.currentTarget.style.borderColor='#e5e7eb'; }}
                         >
                           <div style={{
-                            fontSize:12, fontWeight:700,
-                            color: selected ? '#1d4ed8' : '#111827',
-                            marginBottom:4,
+                            fontSize:12, fontWeight:700, marginBottom:4,
+                            color: selected ? accentColor : '#111827',
                             overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
-                          }} title={lx}>
-                            {selected ? '🔍 ' : ''}{lx}
+                          }}>
+                            {selected ? '🔍 ' : ''}{name}
                           </div>
-                          <div style={{ background:'#e5e7eb', borderRadius:99, height:5, overflow:'hidden', marginBottom:5 }}>
-                            <div style={{ background: selected ? '#3b82f6' : '#059669', width:`${pct}%`, height:'100%', transition:'width .4s' }} />
+                          <div style={{ background:'#e5e7eb', borderRadius:99, height:4, overflow:'hidden', marginBottom:4 }}>
+                            <div style={{ background: selected ? borderSel : '#059669', width:`${pct}%`, height:'100%' }} />
                           </div>
-                          <div style={{ display:'flex', gap:8, fontSize:11 }}>
+                          <div style={{ display:'flex', gap:6, fontSize:11 }}>
                             <span style={{ color:'#2563eb' }}>⏳{d.cho}</span>
                             <span style={{ color:'#d97706' }}>🚚{d.dang}</span>
                             <span style={{ color:'#059669' }}>✅{d.da}</span>
@@ -528,8 +542,8 @@ export default function DieuXePage() {
                     })
                   }
                 </div>
-              )
-            }
+              </div>
+            ))}
           </div>
         </div>
       </div>
