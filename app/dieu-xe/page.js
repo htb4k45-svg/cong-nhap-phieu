@@ -1893,7 +1893,6 @@ export default function DieuXePage() {
                     </div>
                   </div>
                 </div>
-              </div>
                 </> /* end them_moi tab */}
               </div>
 
