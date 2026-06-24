@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import PhieuForm from '@/components/PhieuForm';
 
 // ── Thu hồi form ─────────────────────────────────────────────────────────────
@@ -17,6 +17,14 @@ function PhieuHoiForm() {
   const [form, setForm]       = useState(emptyHoi);
   const [saving, setSaving]   = useState(false);
   const [result, setResult]   = useState(null);
+  const [danhSachKho, setDanhSachKho] = useState([]);
+
+  useEffect(() => {
+    fetch('/api/kho')
+      .then(r => r.json())
+      .then(d => setDanhSachKho(d.kho || []))
+      .catch(() => {});
+  }, []);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
@@ -141,8 +149,23 @@ function PhieuHoiForm() {
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
           <div>
             <label style={labelStyle}>Kho nhận</label>
-            <input value={form.kho_nhan} onChange={e => set('kho_nhan', e.target.value)}
-              placeholder="VD: Kho Miền Nam, Kho HN..." style={inputStyle} />
+            <select value={form.kho_nhan} onChange={e => set('kho_nhan', e.target.value)} style={inputStyle}>
+              <option value="">-- Chọn kho nhận --</option>
+              {Object.entries(
+                danhSachKho.reduce((acc, k) => {
+                  const t = k.tinh_thanh || 'Hà Nội';
+                  if (!acc[t]) acc[t] = [];
+                  acc[t].push(k);
+                  return acc;
+                }, {})
+              ).map(([tinh, list]) => (
+                <optgroup key={tinh} label={tinh}>
+                  {list.map(k => (
+                    <option key={k.ma_kho} value={k.ma_kho}>{k.ten_kho}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
           </div>
           <div>
             <label style={labelStyle}>Người nhận tại Hồng Hà</label>

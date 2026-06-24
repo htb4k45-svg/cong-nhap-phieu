@@ -86,7 +86,7 @@ export default function PhieuForm() {
           fetch('/api/khach-hang'),
         ]);
         const [khoData, khData] = await Promise.all([khoRes.json(), khRes.json()]);
-        setDanhSachKho(khoData.data || []);
+        setDanhSachKho(khoData.kho || khoData.data || []);
         setDanhSachKhachHang(khData.data || []);
       } catch {
         showToast('Không tải được dữ liệu tham chiếu', 'error');
@@ -403,8 +403,20 @@ export default function PhieuForm() {
               <select className="input-field" onChange={handleKhoChange}
                 value={form.kho_custom ? '__custom__' : form.ma_kho}>
                 <option value="">-- Chọn kho --</option>
-                {danhSachKho.map(k => (
-                  <option key={k.ma_kho} value={k.ma_kho}>{k.ma_kho} – {k.ten_kho}</option>
+                {/* Group theo tỉnh/thành — Hà Nội luôn đứng đầu (local first) */}
+                {Object.entries(
+                  danhSachKho.reduce((acc, k) => {
+                    const t = k.tinh_thanh || 'Hà Nội';
+                    if (!acc[t]) acc[t] = [];
+                    acc[t].push(k);
+                    return acc;
+                  }, {})
+                ).map(([tinh, list]) => (
+                  <optgroup key={tinh} label={tinh}>
+                    {list.map(k => (
+                      <option key={k.ma_kho} value={k.ma_kho}>{k.ten_kho}</option>
+                    ))}
+                  </optgroup>
                 ))}
                 <option value="__custom__">✏ Nhập kho khác…</option>
               </select>
