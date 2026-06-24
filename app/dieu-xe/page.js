@@ -1107,7 +1107,7 @@ export default function DieuXePage() {
                                 </th>
                               );
                             })}
-                            {[['Khách hàng','160px'],['Địa chỉ','200px'],['Kho','80px'],['Hàng hóa','160px'],['Trạng thái','100px'],['Cập nhật','80px'],['Lái xe','130px'],['Giao nhận','100px']].map(function(h) {
+                            {[['Khách hàng','160px'],['Địa chỉ','200px'],['Kho','80px'],['Hàng hóa','160px'],['Trạng thái','100px'],['Ghi chú','120px'],['Lái xe','100px'],['Giao nhận','80px']].map(function(h) {
                               return <th key={h[0]} style={{ padding:'9px 10px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6b7280', whiteSpace:'nowrap', width:h[1], minWidth:h[1] }}>{h[0]}</th>;
                             })}
                             {activeDriver && <th style={{ padding:'9px 10px', textAlign:'center', fontSize:11, fontWeight:700, color:'#7c3aed', whiteSpace:'nowrap', width:80, minWidth:80 }}>🛒 Giỏ</th>}
@@ -1192,11 +1192,10 @@ export default function DieuXePage() {
                                     whiteSpace:'nowrap', minWidth:82, opacity:isBusy?0.6:1,
                                   }}>{isBusy ? '…' : ttObj.label}</button>
                                 </td>
-                                <td style={{ padding:'9px 10px', whiteSpace:'nowrap' }}>
-                                  {(function() {
-                                    const t = fmtTime(statusMap[p.row_key] && statusMap[p.row_key].updated_at);
-                                    return t ? <span style={{ fontSize:11, color:'#6b7280' }}>{t}</span> : <span style={{ color:'#e5e7eb' }}>—</span>;
-                                  })()}
+                                <td style={{ padding:'9px 10px', maxWidth:120 }}>
+                                  {p.ghi_chu
+                                    ? <span style={{ fontSize:11, color:'#374151', display:'block', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={p.ghi_chu}>{p.ghi_chu}</span>
+                                    : <span style={{ color:'#e5e7eb' }}>—</span>}
                                 </td>
                                 <td style={{ padding:'6px 8px' }}>
                                   {driverList.length > 0 ? (function() {
@@ -1217,7 +1216,7 @@ export default function DieuXePage() {
                                       <div>
                                         <select value={display} disabled={isSaving}
                                           onChange={function(e) { assignLaiXe(p, 'lai_xe_phan_cong', e.target.value); }}
-                                          style={{ fontSize:11, padding:'3px 6px', borderRadius:5, border:('1px solid '+bc), background:bgc, color:tc, minWidth:100, cursor:'pointer', opacity:isSaving?0.5:1 }}>
+                                          style={{ fontSize:11, padding:'3px 5px', borderRadius:5, border:('1px solid '+bc), background:bgc, color:tc, minWidth:80, maxWidth:96, cursor:'pointer', opacity:isSaving?0.5:1 }}>
                                           <option value=''>— chọn —</option>
                                           {driverList
                                             .filter(function(d) { return d.vai_tro === 'lai_xe' || d.vai_tro === 'ca_hai'; })
@@ -1259,7 +1258,7 @@ export default function DieuXePage() {
                                     return (
                                       <select value={display} disabled={isSaving}
                                         onChange={function(e) { assignLaiXe(p, 'giao_nhan_phan_cong', e.target.value); }}
-                                        style={{ fontSize:11, padding:'3px 6px', borderRadius:5, border:(assigned?'1px solid #6366f1':'1px solid #d1d5db'), background:(assigned?'#eef2ff':'white'), color:(assigned?'#4f46e5':'#374151'), minWidth:90, cursor:'pointer', opacity:isSaving?0.5:1 }}>
+                                        style={{ fontSize:11, padding:'3px 5px', borderRadius:5, border:(assigned?'1px solid #6366f1':'1px solid #d1d5db'), background:(assigned?'#eef2ff':'white'), color:(assigned?'#4f46e5':'#374151'), minWidth:70, maxWidth:78, cursor:'pointer', opacity:isSaving?0.5:1 }}>
                                         <option value=''>— chọn —</option>
                                         {driverList
                                           .filter(function(d) { return d.vai_tro === 'giao_nhan' || d.vai_tro === 'ca_hai'; })
