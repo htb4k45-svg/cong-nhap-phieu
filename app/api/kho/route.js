@@ -7,7 +7,7 @@ export async function GET() {
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from('kho')
-      .select('id, ma_kho, ten_kho, tinh_thanh, dia_chi, sort_order')
+      .select('ma_kho, ten_kho, tinh_thanh, dia_chi, sort_order')
       .eq('active', true)
       .order('sort_order', { ascending: true });
 
@@ -55,8 +55,8 @@ export async function POST(request) {
 // PATCH /api/kho — cập nhật kho (ten_kho, dia_chi, active, sort_order)
 export async function PATCH(request) {
   try {
-    const { id, ...fields } = await request.json();
-    if (!id) return NextResponse.json({ error: 'Thiếu id' }, { status: 400 });
+    const { ma_kho, ...fields } = await request.json();
+    if (!ma_kho) return NextResponse.json({ error: 'Thiếu ma_kho' }, { status: 400 });
 
     const allowed = ['ten_kho', 'tinh_thanh', 'dia_chi', 'active', 'sort_order'];
     const payload = Object.fromEntries(
@@ -67,7 +67,7 @@ export async function PATCH(request) {
     const { data, error } = await supabase
       .from('kho')
       .update(payload)
-      .eq('id', id)
+      .eq('ma_kho', ma_kho)
       .select()
       .single();
 
