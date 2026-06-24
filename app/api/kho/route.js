@@ -7,7 +7,7 @@ export async function GET() {
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from('kho')
-      .select('ma_kho, ten_kho, tinh_thanh, dia_chi, sort_order')
+      .select('ma_kho, ten_kho, tinh_thanh, sort_order')
       .eq('active', true)
       .order('sort_order', { ascending: true });
 
