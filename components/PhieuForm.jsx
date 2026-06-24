@@ -414,23 +414,8 @@ export default function PhieuForm() {
                     ))}
                   </optgroup>
                 ))}
-                <option value="__custom__">✏ Nhập kho khác…</option>
               </select>
             </div>
-            {form.kho_custom && (
-              <>
-                <div>
-                  <label className="label">Mã kho (nhập tay)</label>
-                  <input type="text" className="input-field" placeholder="Mã kho"
-                    value={form.ma_kho} onChange={e => setField('ma_kho', e.target.value)} />
-                </div>
-                <div>
-                  <label className="label">Tên kho (nhập tay)</label>
-                  <input type="text" className="input-field" placeholder="Tên kho"
-                    value={form.ten_kho} onChange={e => setField('ten_kho', e.target.value)} />
-                </div>
-              </>
-            )}
           </div>
         </div>
 
