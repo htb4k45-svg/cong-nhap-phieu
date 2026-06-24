@@ -151,15 +151,11 @@ function PhieuHoiForm() {
             <label style={labelStyle}>Kho nhận</label>
             <select value={form.kho_nhan} onChange={e => set('kho_nhan', e.target.value)} style={inputStyle}>
               <option value="">-- Chọn kho nhận --</option>
-              {Object.entries(
-                danhSachKho.reduce((acc, k) => {
-                  const t = k.tinh_thanh || 'Hà Nội';
-                  if (!acc[t]) acc[t] = [];
-                  acc[t].push(k);
-                  return acc;
-                }, {})
-              ).map(([tinh, list]) => (
-                <optgroup key={tinh} label={tinh}>
+              {[
+                { label: 'Hà Nội',   list: danhSachKho.filter(k => k.tinh_thanh === 'Hà Nội') },
+                { label: 'Kho khác', list: danhSachKho.filter(k => k.tinh_thanh !== 'Hà Nội') },
+              ].filter(g => g.list.length > 0).map(({ label, list }) => (
+                <optgroup key={label} label={label}>
                   {list.map(k => (
                     <option key={k.ma_kho} value={k.ma_kho}>{k.ten_kho}</option>
                   ))}
