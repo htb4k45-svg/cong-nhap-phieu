@@ -66,19 +66,22 @@ export async function POST(request) {
     const scriptUrl = process.env.APPS_SCRIPT_WRITE_URL;
     const hasAssignment = lai_xe_phan_cong !== undefined || giao_nhan_phan_cong !== undefined;
     if (scriptUrl && hasAssignment) {
-      // Fire-and-forget — không block response
-      fetch(scriptUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          row_key,
-          so_phieu:   row_key,
-          bo_phan:    bo_phan || 'B2B',
-          lai_xe:     lai_xe_phan_cong,
-          giao_nhan:  giao_nhan_phan_cong,
-          ngay_giao:  ngay_giao || null,
-        }),
-      }).catch(e => console.warn('Apps Script write failed:', e.message));
+      // Await với timeout 5s — Vercel serverless tắt ngay khi return nên không dùng fire-and-forget
+      await Promise.race([
+        fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            row_key,
+            so_phieu:   row_key,
+            bo_phan:    bo_phan || 'B2B',
+            lai_xe:     lai_xe_phan_cong,
+            giao_nhan:  giao_nhan_phan_cong,
+            ngay_giao:  ngay_giao || null,
+          }),
+        }).catch(e => console.warn('Apps Script write failed:', e.message)),
+        new Promise(resolve => setTimeout(resolve, 5000)),
+      ]);
     }
 
     return NextResponse.json({ data });
