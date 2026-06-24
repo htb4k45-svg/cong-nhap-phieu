@@ -125,19 +125,26 @@ export default function DieuXePage() {
   const [chotData, setChotData]           = useState({});   // { km_bat_dau, km_ket_thuc, ghi_chu, donHoan: Set }
   const [chotSaving, setChotSaving]       = useState(false);
   const [chotSummary, setChotSummary]     = useState(null); // { driver, date, thieu: [{so_phieu,ten_kh,ghi_chu}] }
+  const [phieuHoiList, setPhieuHoiList]   = useState([]);
+  const [hoiModal, setHoiModal]           = useState(null); // driver name
+  const [hoiForm, setHoiForm]             = useState({ nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'', ghi_chu:'' });
+  const [hoiSaving, setHoiSaving]         = useState(false);
 
   const fetchData = useCallback(async (from, to) => {
     setLoading(true);
     setSheetErrors([]);
     try {
-      const [sheetsRes, statusRes] = await Promise.all([
+      const [sheetsRes, statusRes, hoiRes] = await Promise.all([
         fetch(`/api/sheets-data?from=${from}&to=${to}`),
         fetch(`/api/dispatch-status?from=${from}&to=${to}`),
+        fetch(`/api/phieu-hoi?date=${from}`),
       ]);
       const sheetsJson = await sheetsRes.json();
       const statusJson = await statusRes.json();
+      const hoiJson    = await hoiRes.json();
       setPhieuList(sheetsJson.phieu || []);
       setStatusMap(statusJson.statusMap || {});
+      setPhieuHoiList(hoiJson.phieu_hoi || []);
       setSheetErrors(sheetsJson.errors || []);
       setLastFetch(new Date().toLocaleTimeString('vi-VN'));
     } catch (e) {
@@ -219,6 +226,7 @@ export default function DieuXePage() {
       const lx = s ? s.lai_xe_phan_cong : p.lai_xe;
       return lx === driverName;
     });
+    const hoiItems = phieuHoiList.filter(h => h.lai_xe === driverName);
     const gn = orders.length > 0
       ? (statusMap[orders[0].row_key]?.giao_nhan_phan_cong || orders[0].giao_nhan || '—')
       : '—';
@@ -424,6 +432,35 @@ export default function DieuXePage() {
     <div class="note-line"></div>
   </div>
 
+  ${hoiItems.length > 0 ? `
+  <!-- Hàng hồi -->
+  <div style="margin-top:10px; border:1.5px solid #7c3aed; border-radius:6px; overflow:hidden;">
+    <div style="background:#7c3aed; color:white; padding:5px 10px; font-weight:bold; font-size:9.5pt;">📥 ĐIỂM NHẬN HÀNG HỒI — ${hoiItems.length} điểm</div>
+    <table style="width:100%; border-collapse:collapse; font-size:8.5pt;">
+      <thead><tr style="background:#f3e8ff;">
+        <th style="padding:4px 6px; border:1px solid #d8b4fe; text-align:center; width:28px">STT</th>
+        <th style="padding:4px 6px; border:1px solid #d8b4fe;">Điểm lấy</th>
+        <th style="padding:4px 6px; border:1px solid #d8b4fe;">Địa chỉ</th>
+        <th style="padding:4px 6px; border:1px solid #d8b4fe; width:90px">SĐT</th>
+        <th style="padding:4px 6px; border:1px solid #d8b4fe;">Loại hàng</th>
+        <th style="padding:4px 6px; border:1px solid #d8b4fe; text-align:center; width:50px">Thùng</th>
+        <th style="padding:4px 6px; border:1px solid #d8b4fe; text-align:center; width:80px">Xác nhận ký</th>
+      </tr></thead>
+      <tbody>
+        ${hoiItems.map((h, i) => `<tr>
+          <td style="padding:3px 6px; border:1px solid #e5e7eb; text-align:center">${i+1}</td>
+          <td style="padding:3px 6px; border:1px solid #e5e7eb; font-weight:bold">${h.nguon_ten || ''}</td>
+          <td style="padding:3px 6px; border:1px solid #e5e7eb">${h.nguon_dia_chi || ''}</td>
+          <td style="padding:3px 6px; border:1px solid #e5e7eb">${h.nguon_sdt || ''}</td>
+          <td style="padding:3px 6px; border:1px solid #e5e7eb">${h.loai_hang || ''}</td>
+          <td style="padding:3px 6px; border:1px solid #e5e7eb; text-align:center; font-weight:bold">${h.so_luong_thung || 0}</td>
+          <td style="padding:3px 6px; border:1px solid #e5e7eb; text-align:center">□</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+  ` : ''}
+
   <!-- Signatures -->
   <div class="sign-row">
     <div class="sign-box"><div class="title">Người lập phiếu</div><div class="name-line"></div></div>
@@ -464,14 +501,15 @@ export default function DieuXePage() {
       .then(d => {
         const existing = d.runs && d.runs[0];
         setChotData({
-          km_bat_dau:  existing?.km_bat_dau  ?? '',
-          km_ket_thuc: existing?.km_ket_thuc ?? '',
-          ghi_chu:     existing?.ghi_chu     ?? '',
-          donHoan:     new Set(),
-          donGhiChu:   {},  // { [row_key]: string } — ghi chú thiếu hàng per đơn
+          km_bat_dau:    existing?.km_bat_dau  ?? '',
+          km_ket_thuc:   existing?.km_ket_thuc ?? '',
+          ghi_chu:       existing?.ghi_chu     ?? '',
+          donHoan:       new Set(),
+          donGhiChu:     {},  // { [row_key]: string } — ghi chú thiếu hàng per đơn
+          phieuHoiDaLay: new Set(),
         });
       })
-      .catch(() => setChotData({ km_bat_dau:'', km_ket_thuc:'', ghi_chu:'', donHoan: new Set(), donGhiChu:{} }));
+      .catch(() => setChotData({ km_bat_dau:'', km_ket_thuc:'', ghi_chu:'', donHoan: new Set(), donGhiChu:{}, phieuHoiDaLay: new Set() }));
     setChotModal(driverName);
   };
 
@@ -518,7 +556,22 @@ export default function DieuXePage() {
           ghi_chu:      chotData.ghi_chu     || null,
         }),
       });
-      // 3. Cập nhật local statusMap
+      // 3. Cập nhật phieu_hoi đã lấy trong cùng chuyến
+      if (chotData.phieuHoiDaLay && chotData.phieuHoiDaLay.size > 0) {
+        await Promise.all([...chotData.phieuHoiDaLay].map(id =>
+          fetch('/api/phieu-hoi', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, trang_thai: 'da_lay' }),
+          })
+        ));
+        setPhieuHoiList(prev => prev.map(h =>
+          (chotData.phieuHoiDaLay && chotData.phieuHoiDaLay.has(h.id))
+            ? { ...h, trang_thai: 'da_lay' } : h
+        ));
+      }
+
+      // 4. Cập nhật local statusMap
       const newMap = { ...statusMap };
       orders.forEach(p => {
         const isHoan    = chotData.donHoan   && chotData.donHoan.has(p.row_key);
@@ -526,7 +579,7 @@ export default function DieuXePage() {
         newMap[p.row_key] = { ...(newMap[p.row_key] || {}), trang_thai: isHoan ? 'huy' : 'da_giao', ghi_chu_giao: ghiChuDon || null };
       });
       setStatusMap(newMap);
-      // 4. Tổng hợp đơn thiếu hàng để gửi email kho
+      // 5. Tổng hợp đơn thiếu hàng để gửi email kho
       const donThieu = orders.filter(p => chotData.donGhiChu && chotData.donGhiChu[p.row_key]);
       if (donThieu.length > 0) {
         setChotSummary({
@@ -908,6 +961,21 @@ export default function DieuXePage() {
                                 </button>
                               </div>
                             )}
+                            {grp.showLoad && (() => {
+                              const hoiCount = phieuHoiList.filter(h => h.lai_xe === name).length;
+                              return (
+                                <div style={{ marginTop:4 }}>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setHoiModal(name); }}
+                                    style={{ width:'100%', padding:'3px 0', fontSize:11, fontWeight:700,
+                                      background: hoiCount > 0 ? '#7c3aed' : '#e5e7eb',
+                                      color: hoiCount > 0 ? 'white' : '#9ca3af',
+                                      border:'none', borderRadius:5, cursor:'pointer' }}>
+                                    📥 {hoiCount > 0 ? `Hàng hồi (${hoiCount})` : 'Thêm hàng hồi'}
+                                  </button>
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })
@@ -1429,104 +1497,32 @@ export default function DieuXePage() {
                     </div>
                   );
                 })()}
-              </div>
 
-              {/* Footer */}
-              <div style={{ padding:'12px 20px', borderTop:'1px solid #e5e7eb', display:'flex', gap:8, justifyContent:'flex-end' }}>
-                <button onClick={() => setChotModal(null)} style={{ padding:'8px 16px', border:'1px solid #d1d5db', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>Huỷ</button>
-                <button
-                  onClick={submitChot}
-                  disabled={chotSaving || orders.length === 0}
-                  style={{ padding:'8px 24px', background: orders.length===0?'#9ca3af':'#059669', color:'white', border:'none', borderRadius:8, fontWeight:800, fontSize:13, cursor: orders.length===0?'default':'pointer', opacity: chotSaving?0.7:1 }}>
-                  {chotSaving ? '⏳ Đang chốt...' : `✅ Xác nhận chốt ${orders.length} đơn`}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {lenhModal && (() => {
-        const driverInfo = driverList.find(d => d.ten === lenhModal) || {};
-        const orders = phieuList.filter(p => {
-          const s = statusMap[p.row_key];
-          const lx = s ? s.lai_xe_phan_cong : p.lai_xe;
-          return lx === lenhModal;
-        });
-        const gn = orders.length > 0
-          ? (statusMap[orders[0].row_key]?.giao_nhan_phan_cong || orders[0].giao_nhan || '—')
-          : '—';
-        return (
-          <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.5)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
-            onClick={() => setLenhModal(null)}>
-            <div style={{ background:'white', borderRadius:14, width:'100%', maxWidth:820, maxHeight:'90vh', overflow:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.3)' }}
-              onClick={e => e.stopPropagation()}>
-              {/* Header */}
-              <div style={{ background:'#1e3a5f', color:'white', padding:'16px 20px', borderRadius:'14px 14px 0 0', display:'flex', alignItems:'center', gap:10 }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontWeight:800, fontSize:16 }}>📋 Lệnh điều xe — {lenhModal}</div>
-                  <div style={{ fontSize:12, opacity:.8, marginTop:2 }}>
-                    🚗 {driverInfo.bien_so || 'Chưa có biển số'}
-                    {' · '}👤 Phụ xe: {gn}
-                    {' · '}📅 {ngayTu === ngayDen ? ngayTu : ngayTu + ' → ' + ngayDen}
-                    {' · '}{orders.length} đơn
-                  </div>
-                </div>
-                <button onClick={() => setLenhModal(null)} style={{ background:'rgba(255,255,255,.15)', border:'none', color:'white', borderRadius:8, padding:'5px 12px', cursor:'pointer', fontSize:14 }}>✕ Đóng</button>
-              </div>
-
-              {/* Order list */}
-              <div style={{ padding:'12px 20px' }}>
-                {orders.length === 0
-                  ? <div style={{ textAlign:'center', padding:40, color:'#9ca3af' }}>Chưa có đơn nào được phân cho xe này</div>
-                  : (
-                  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                    <thead>
-                      <tr style={{ background:'#f3f4f6' }}>
-                        {['#','Số phiếu','Khách hàng','Địa chỉ','Hàng hóa','Trạng thái'].map(h => (
-                          <th key={h} style={{ padding:'7px 10px', textAlign:'left', fontWeight:700, color:'#374151', borderBottom:'2px solid #e5e7eb', whiteSpace:'nowrap' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {orders.map((p, i) => {
-                        const tt = getTT(p);
-                        const ttInfo = TRANG_THAI[tt] || TRANG_THAI.cho_giao;
-                        return (
-                          <tr key={p.row_key} style={{ borderBottom:'1px solid #f3f4f6', background: i%2===0?'white':'#fafafa' }}>
-                            <td style={{ padding:'6px 10px', color:'#9ca3af' }}>{i+1}</td>
-                            <td style={{ padding:'6px 10px', fontWeight:600, color:'#1d4ed8' }}>{p.so_phieu}</td>
-                            <td style={{ padding:'6px 10px' }}>{p.ten_kh}</td>
-                            <td style={{ padding:'6px 10px', color:'#6b7280', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.dia_chi_giao}</td>
-                            <td style={{ padding:'6px 10px', color:'#374151' }}>{p.ghi_chu || (p.san_pham?.length > 0 ? p.san_pham.map(s=>s.ma_sp+'×'+s.so_luong).join(', ') : '—')}</td>
-                            <td style={{ padding:'6px 10px' }}>
-                              <span style={{ padding:'2px 8px', borderRadius:5, fontSize:11, fontWeight:700, background:ttInfo.bg, color:ttInfo.color }}>{ttInfo.label}</span>
-                            </td>
+                {/* Hàng hồi section trong Chốt */}
+                {(() => {
+                  const hoiItems = phieuHoiList.filter(h => h.lai_xe === chotModal);
+                  if (hoiItems.length === 0) return null;
+                  return (
+                    <div style={{ marginTop:16 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:'#7c3aed', marginBottom:8 }}>
+                        📥 Hàng hồi cần lấy ({hoiItems.length} điểm) — tick xác nhận đã lấy:
+                      </div>
+                      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                        <thead>
+                          <tr style={{ background:'#f3e8ff' }}>
+                            {['Đã lấy?','Điểm lấy','Địa chỉ','Loại hàng','Thùng','Ghi chú'].map(h => (
+                              <th key={h} style={{ padding:'6px 8px', textAlign:'left', fontWeight:700, color:'#7c3aed', borderBottom:'2px solid #d8b4fe', whiteSpace:'nowrap' }}>{h}</th>
+                            ))}
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-
-              {/* Footer */}
-              <div style={{ padding:'12px 20px', borderTop:'1px solid #e5e7eb', display:'flex', gap:8, justifyContent:'flex-end' }}>
-                <button onClick={() => setLenhModal(null)} style={{ padding:'8px 16px', border:'1px solid #d1d5db', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>Đóng</button>
-                <button
-                  onClick={() => printLenh(lenhModal)}
-                  disabled={orders.length === 0}
-                  style={{ padding:'8px 20px', background: orders.length === 0 ? '#9ca3af' : '#1e3a5f', color:'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: orders.length===0?'default':'pointer' }}>
-                  🖨️ In / Xuất PDF
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-    </div>
-  );
-}
-
-const btnStyle = { padding:'6px 12px', border:'1px solid #d1d5db', borderRadius:6, background:'white', cursor:'pointer', fontSize:15 };
+                        </thead>
+                        <tbody>
+                          {hoiItems.map((h, i) => {
+                            const isDaLay = chotData.phieuHoiDaLay && chotData.phieuHoiDaLay.has(h.id);
+                            const alreadyDone = h.trang_thai === 'da_lay';
+                            return (
+                              <tr key={h.id} style={{ borderBottom:'1px solid #f3f4f6', background: isDaLay || alreadyDone ? '#f0fdf4' : (i%2===0?'white':'#fafafa') }}>
+                                <td style={{ padding:'6px 8px', textAlign:'center' }}>
+                                  {alreadyDone
+                                    ? <span style={{ color:'#059669', fontWeight:700 }}>✅</span>
+                                    : <input type="checkbox" checked={!!isDaLay} onChange={() => {
+                                        setChotDat

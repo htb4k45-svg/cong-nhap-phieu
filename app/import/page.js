@@ -28,6 +28,26 @@ function detectFormat(headers) {
   return 'B2B';
 }
 
+// ── Parse đặc điểm xuất hàng từ text ────────────────────────────────────────
+// Đọc cột "LOẠI XUẤT" / "ĐẶC ĐIỂM" nếu có, fallback về inference từ địa chỉ
+
+function parseDacDiem(val, diaChiFallback) {
+  if (val) {
+    const v = String(val).trim().toUpperCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, ''); // bỏ dấu để so sánh
+    if (v.includes('BU') || v.includes('THIEU') || v.includes('THẾU')) return 'xuat_thieu';
+    if (v.includes('TRA') || v.includes('GUI') || v.includes('GỬI')) return 'xuat_gui';
+    if (v.includes('MOI') || v.includes('MỚI')) return 'xuat_moi';
+  }
+  // Fallback: đọc từ địa chỉ (logic cũ cho B2B)
+  if (diaChiFallback) {
+    const d = String(diaChiFallback).toUpperCase();
+    if (d.includes('TRẢ HÀNG THIẾU') || d.includes('HÀNG THIẾU')) return 'xuat_thieu';
+    if (d.includes('TRẢ HÀNG') || d.includes('GIAO HÀNG')) return 'xuat_gui';
+  }
+  return 'xuat_moi';
+}
+
 // ── Parser MT (Thị Trường / GT) ──────────────────────────────────────────────
 
 function parseMTSheet(ws) {
@@ -55,9 +75,10 @@ function parseMTSheet(ws) {
   const giaoNhanIdx = idx(h => h.includes('GIAO NHẬN'));
   const ngayDiIdx   = idx(h => (h.includes('NGÀY') && h.includes('ĐI')) || h === 'NGÀY ĐI');
   const ngayYcIdx   = idx(h => h.includes('YÊU CẦU'));
-  const khoIdx      = idx(h => h.includes('KHO'));
-  const ghiChuIdx   = idx(h => h.includes('GHI CHÚ'));
-  const tongThungIdx= idx(h => h.includes('TỔNG THÙNG') || (h.includes('TỔNG') && h.includes('THÙNG')));
+  const khoIdx       = idx(h => h.includes('KHO'));
+  const ghiChuIdx    = idx(h => h.includes('GHI CHÚ'));
+  const tongThungIdx = idx(h => h.includes('TỔNG THÙNG') || (h.includes('TỔNG') && h.includes('THÙNG')));
+  const loaiXuatIdx  = idx(h => h.includes('LOẠI XUẤT') || h.includes('LOAI XUAT') || h.includes('ĐẶC ĐIỂM') || h.includes('DAC DIEM'));
 
   const phieuList = [];
 
@@ -80,8 +101,8 @@ function parseMTSheet(ws) {
     if (tongThungVal) ghiChu += `Tổng thùng: ${tongThungVal}`;
     if (ghiChuVal)    ghiChu += (ghiChu ? ' | ' : '') + String(ghiChuVal).trim();
 
-    // Kho có thể ở cột "KHO CÔNG TY" hoặc "Kho"
-    const khoVal = khoIdx >= 0 && row[khoIdx] ? String(row[khoIdx]).trim() : null;
+    const khoVal      = khoIdx >= 0 && row[khoIdx] ? String(row[khoIdx]).trim() : null;
+    const loaiXuatVal = loaiXuatIdx >= 0 ? row[loaiXuatIdx] : null;
 
     phieuList.push({
       bo_phan:      'MT',
@@ -98,7 +119,7 @@ function parseMTSheet(ws) {
       lai_xe:        laiXeIdx >= 0 && row[laiXeIdx] ? String(row[laiXeIdx]).trim() : null,
       giao_nhan:     giaoNhanIdx >= 0 && row[giaoNhanIdx] ? String(row[giaoNhanIdx]).trim() : null,
       san_pham:      [],
-      dac_diem:      'xuat_moi',
+      dac_diem:      parseDacDiem(loaiXuatVal, null),
       ghi_chu:       ghiChu || null,
     });
   }
@@ -129,8 +150,9 @@ function parseB2BSheet(ws) {
   const ngayGiaoIdx = idx(h => h.includes('NGÀY GIAO') || h === 'NGÀY GIAO');
   const laiXeIdx    = idx(h => h.includes('LÁI XE'));
   const giaoNhanIdx = idx(h => h.includes('GIAO NHẬN'));
-  const tongTienIdx = idx(h => h.includes('TỔNG TIỀN'));
-  const khoIdx      = idx(h => h === 'KHO');
+  const tongTienIdx  = idx(h => h.includes('TỔNG TIỀN'));
+  const khoIdx       = idx(h => h === 'KHO');
+  const loaiXuatIdx  = idx(h => h.includes('LOẠI XUẤT') || h.includes('LOAI XUAT') || h.includes('ĐẶC ĐIỂM') || h.includes('DAC DIEM'));
 
   const spStart  = diaChiIdx + 1;
   const spEnd    = tongTienIdx > 0 ? tongTienIdx : laiXeIdx > 0 ? laiXeIdx : headers.length;
@@ -154,24 +176,22 @@ function parseB2BSheet(ws) {
       }
     }
 
-    const diaChiStr = String(row[diaChiIdx] || '').toUpperCase();
-    let dacDiem = 'xuat_moi';
-    if (diaChiStr.includes('TRẢ HÀNG THIẾU') || diaChiStr.includes('HÀNG THIẾU')) dacDiem = 'xuat_thieu';
-    else if (diaChiStr.includes('TRẢ HÀNG') || diaChiStr.includes('GIAO HÀNG')) dacDiem = 'xuat_gui';
+    const loaiXuatVal = loaiXuatIdx >= 0 ? row[loaiXuatIdx] : null;
+    const diaChiStr   = row[diaChiIdx] ? String(row[diaChiIdx]).trim() : '';
 
     phieuList.push({
       bo_phan:      'B2B',
       so_phieu:     String(soPhieu).trim(),
       ngay_nhap:    ngayNhap,
       ten_kh:       row[khachIdx] ? String(row[khachIdx]).trim() : '',
-      dia_chi_giao: row[diaChiIdx] ? String(row[diaChiIdx]).trim() : '',
+      dia_chi_giao: diaChiStr,
       ngay_can_giao: ngayCan,
       ma_kho:       khoIdx >= 0 && row[khoIdx] ? String(row[khoIdx]).trim() : null,
       ten_kho:      khoIdx >= 0 && row[khoIdx] ? String(row[khoIdx]).trim() : null,
       lai_xe:       laiXeIdx >= 0 && row[laiXeIdx] ? String(row[laiXeIdx]).trim() : null,
       giao_nhan:    giaoNhanIdx >= 0 && row[giaoNhanIdx] ? String(row[giaoNhanIdx]).trim() : null,
       san_pham:     sanPham,
-      dac_diem:     dacDiem,
+      dac_diem:     parseDacDiem(loaiXuatVal, diaChiStr), // ưu tiên cột LOẠI XUẤT, fallback địa chỉ
     });
   }
 

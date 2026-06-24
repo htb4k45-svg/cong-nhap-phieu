@@ -48,6 +48,33 @@ function detectFormat(headers) {
   return headers.some(h => normHeader(h).includes('MÃ LỆNH')) ? 'MT' : 'B2B';
 }
 
+// ── Parse đặc điểm xuất hàng ─────────────────────────────────
+// Ưu tiên cột LOẠI XUẤT / ĐẶC ĐIỂM, fallback inference từ địa chỉ (B2B cũ)
+
+function parseDacDiem(val, diaChiFallback) {
+  if (val) {
+    // Bỏ dấu tiếng Việt để so sánh đơn giản hơn
+    var v = String(val).trim().toUpperCase()
+      .replace(/[àáảãạăắặẳẵằâấậẩẫầ]/gi,'A')
+      .replace(/[èéẻẽẹêếệểễề]/gi,'E')
+      .replace(/[ìíỉĩị]/gi,'I')
+      .replace(/[òóỏõọôốộổỗồơớợởỡờ]/gi,'O')
+      .replace(/[ùúủũụưứựửữừ]/gi,'U')
+      .replace(/[ỳýỷỹỵ]/gi,'Y')
+      .replace(/[đ]/gi,'D');
+    if (v.includes('BU') || v.includes('THIEU')) return 'xuat_thieu';
+    if (v.includes('TRA') || v.includes('GUI'))  return 'xuat_gui';
+    if (v.includes('MOI'))                       return 'xuat_moi';
+  }
+  // Fallback cho B2B: đọc từ địa chỉ
+  if (diaChiFallback) {
+    var d = String(diaChiFallback).toUpperCase();
+    if (d.includes('TRẢ HÀNG THIẾU') || d.includes('HÀNG THIẾU')) return 'xuat_thieu';
+    if (d.includes('TRẢ HÀNG') || d.includes('GIAO HÀNG'))        return 'xuat_gui';
+  }
+  return 'xuat_moi';
+}
+
 // ── Parse 1 sheet sang danh sách phiếu ───────────────────────
 
 function parseSheet(sheet) {
@@ -83,6 +110,7 @@ function parseSheet(sheet) {
     const khoIdx       = idx(h => h.includes('KHO'));
     const ghiChuIdx    = idx(h => h.includes('GHI CHÚ'));
     const tongThungIdx = idx(h => h.includes('TỔNG THÙNG') || (h.includes('TỔNG') && h.includes('THÙNG')));
+    const loaiXuatIdx  = idx(h => h.includes('LOẠI XUẤT') || h.includes('LOAI XUAT') || h.includes('ĐẶC ĐIỂM') || h.includes('DAC DIEM'));
 
     const result = [];
     for (let i = headerIdx + 1; i < data.length; i++) {
@@ -104,7 +132,8 @@ function parseSheet(sheet) {
       if (tongThungVal) ghiChu += 'Tổng thùng: ' + tongThungVal;
       if (ghiChuVal)    ghiChu += (ghiChu ? ' | ' : '') + String(ghiChuVal).trim();
 
-      const khoVal = khoIdx >= 0 && row[khoIdx] ? String(row[khoIdx]).trim() : null;
+      const khoVal      = khoIdx >= 0 && row[khoIdx] ? String(row[khoIdx]).trim() : null;
+      const loaiXuatVal = loaiXuatIdx >= 0 ? row[loaiXuatIdx] : null;
 
       result.push({
         bo_phan:       'MT',
@@ -121,7 +150,7 @@ function parseSheet(sheet) {
         lai_xe:        laiXeIdx >= 0 && row[laiXeIdx] ? String(row[laiXeIdx]).trim() : null,
         giao_nhan:     giaoNhanIdx >= 0 && row[giaoNhanIdx] ? String(row[giaoNhanIdx]).trim() : null,
         san_pham:      [],
-        dac_diem:      'xuat_moi',
+        dac_diem:      parseDacDiem(loaiXuatVal, null),
         ghi_chu:       ghiChu || null,
       });
     }
@@ -136,8 +165,9 @@ function parseSheet(sheet) {
     const ngayGiaoIdx = idx(h => h.includes('NGÀY GIAO') || h === 'NGÀY GIAO');
     const laiXeIdx    = idx(h => h.includes('LÁI XE'));
     const giaoNhanIdx = idx(h => h.includes('GIAO NHẬN'));
-    const tongTienIdx = idx(h => h.includes('TỔNG TIỀN'));
-    const khoIdx      = idx(h => h === 'KHO');
+    const tongTienIdx  = idx(h => h.includes('TỔNG TIỀN'));
+    const khoIdx       = idx(h => h === 'KHO');
+    const loaiXuatIdx  = idx(h => h.includes('LOẠI XUẤT') || h.includes('LOAI XUAT') || h.includes('ĐẶC ĐIỂM') || h.includes('DAC DIEM'));
 
     const spStart   = diaChiIdx + 1;
     const spEnd     = tongTienIdx > 0 ? tongTienIdx : laiXeIdx > 0 ? laiXeIdx : headers.length;
@@ -160,24 +190,22 @@ function parseSheet(sheet) {
         }
       }
 
-      const diaChiStr = String(row[diaChiIdx] || '').toUpperCase();
-      let dacDiem = 'xuat_moi';
-      if (diaChiStr.includes('TRẢ HÀNG THIẾU') || diaChiStr.includes('HÀNG THIẾU')) dacDiem = 'xuat_thieu';
-      else if (diaChiStr.includes('TRẢ HÀNG') || diaChiStr.includes('GIAO HÀNG')) dacDiem = 'xuat_gui';
+      const diaChiStr   = row[diaChiIdx] ? String(row[diaChiIdx]).trim() : '';
+      const loaiXuatVal = loaiXuatIdx >= 0 ? row[loaiXuatIdx] : null;
 
       result.push({
         bo_phan:      'B2B',
         so_phieu:     String(soPhieu).trim(),
         ngay_nhap:    ngayNhap,
         ten_kh:       row[khachIdx] ? String(row[khachIdx]).trim() : '',
-        dia_chi_giao: row[diaChiIdx] ? String(row[diaChiIdx]).trim() : '',
+        dia_chi_giao: diaChiStr,
         ngay_can_giao: ngayCan,
         ma_kho:       khoIdx >= 0 && row[khoIdx] ? String(row[khoIdx]).trim() : null,
         ten_kho:      khoIdx >= 0 && row[khoIdx] ? String(row[khoIdx]).trim() : null,
         lai_xe:       laiXeIdx >= 0 && row[laiXeIdx] ? String(row[laiXeIdx]).trim() : null,
         giao_nhan:    giaoNhanIdx >= 0 && row[giaoNhanIdx] ? String(row[giaoNhanIdx]).trim() : null,
         san_pham:     sanPham,
-        dac_diem:     dacDiem,
+        dac_diem:     parseDacDiem(loaiXuatVal, diaChiStr),
       });
     }
     return result;
