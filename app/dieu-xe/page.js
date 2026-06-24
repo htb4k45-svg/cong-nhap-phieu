@@ -101,8 +101,11 @@ function getTongThung(p) {
 }
 
 export default function DieuXePage() {
-  const [ngayTu, setNgayTu]           = useState(toDateStr(new Date()));
-  const [ngayDen, setNgayDen]         = useState(toDateStr(new Date()));
+  const [ngayTu, setNgayTu]           = useState(toDateStr(new Date())); // ngày làm việc (dùng cho print/chốt/delivery-runs)
+  const [filterFrom, setFilterFrom]   = useState('');
+  const [filterTo, setFilterTo]       = useState('');
+  const [sortBy, setSortBy]           = useState('ngay_len_don');  // 'ngay_len_don' | 'ngay_can_giao'
+  const [sortDir, setSortDir]         = useState('desc');
   const [phieuList, setPhieuList]     = useState([]);
   const [statusMap, setStatusMap]     = useState({});
   const [loading, setLoading]         = useState(false);
@@ -132,14 +135,19 @@ export default function DieuXePage() {
   const [hoiThenLenh, setHoiThenLenh]     = useState(false);  // true = opened from "In lệnh" (mandatory flow)
   const [hoiNoHoi, setHoiNoHoi]           = useState(false);  // checkbox "xác nhận không có hàng hồi"
 
-  const fetchData = useCallback(async (from, to) => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setSheetErrors([]);
     try {
+      // Luôn fetch tháng trước + tháng hiện tại
+      const now = new Date();
+      const prevFirst = toDateStr(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+      const curLast   = toDateStr(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+      const today     = toDateStr(now);
       const [sheetsRes, statusRes, hoiRes] = await Promise.all([
-        fetch(`/api/sheets-data?from=${from}&to=${to}`),
-        fetch(`/api/dispatch-status?from=${from}&to=${to}`),
-        fetch(`/api/phieu-hoi?date=${from}`),
+        fetch(`/api/sheets-data?from=${prevFirst}&to=${curLast}`),
+        fetch(`/api/dispatch-status?from=${prevFirst}&to=${curLast}`),
+        fetch(`/api/phieu-hoi?date=${today}`),
       ]);
       const sheetsJson = await sheetsRes.json();
       const statusJson = await statusRes.json();
@@ -156,7 +164,7 @@ export default function DieuXePage() {
     }
   }, []);
 
-  useEffect(() => { fetchData(ngayTu, ngayDen); }, [ngayTu, ngayDen, fetchData]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   useEffect(() => {
     fetch('/api/phuong-xa?list=1')
@@ -194,22 +202,7 @@ export default function DieuXePage() {
     }
   };
 
-  const setPreset = (days) => {
-    const today = new Date();
-    const from  = new Date(today);
-    const to    = new Date(today);
-    if (days === 3) {
-      from.setDate(today.getDate() - 1);
-      to.setDate(today.getDate() + 1);
-    } else if (days === 7) {
-      from.setDate(today.getDate() - 3);
-      to.setDate(today.getDate() + 3);
-    }
-    setNgayTu(toDateStr(from));
-    setNgayDen(toDateStr(to));
-  };
-
-  const isSingleDay = ngayTu === ngayDen;
+  const isSingleDay = true; // ngayTu luôn là 1 ngày làm việc cụ thể
 
   const getTT = useCallback((p) => {
     const s = statusMap[p.row_key];
@@ -668,6 +661,11 @@ export default function DieuXePage() {
     }
   };
 
+  const toggleSort = useCallback(function(col) {
+    if (sortBy === col) setSortDir(function(d) { return d === 'desc' ? 'asc' : 'desc'; });
+    else { setSortBy(col); setSortDir('desc'); }
+  }, [sortBy]);
+
   const filtered = useMemo(() => {
     const q = normVN(searchQ);
     const list = phieuList.filter(function(p) {
@@ -681,22 +679,21 @@ export default function DieuXePage() {
         const hay = normVN((p.so_phieu||'') + ' ' + (p.ten_kh||'') + ' ' + (p.ma_lenh||''));
         if (!hay.includes(q)) return false;
       }
+      // Client-side date filter theo ngay_can_giao
+      if (filterFrom && p.ngay_can_giao && p.ngay_can_giao < filterFrom) return false;
+      if (filterTo   && p.ngay_can_giao && p.ngay_can_giao > filterTo)   return false;
       return true;
     });
-    // Sort: chưa có dispatch_status (mới nhất, chưa phân) lên trên,
-    // sau đó theo updated_at DESC (mới cập nhật gần đây nhất)
     list.sort(function(a, b) {
-      const sa = statusMap[a.row_key];
-      const sb = statusMap[b.row_key];
-      // Chưa có status → ưu tiên lên trên
-      if (!sa && sb) return -1;
-      if (sa && !sb) return 1;
-      if (!sa && !sb) return 0;
-      // Cả hai có status → so updated_at mới hơn lên trên
-      return new Date(sb.updated_at) - new Date(sa.updated_at);
+      const aVal = a[sortBy] || '';
+      const bVal = b[sortBy] || '';
+      if (!aVal && !bVal) return 0;
+      if (!aVal) return 1;
+      if (!bVal) return -1;
+      return sortDir === 'desc' ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal);
     });
     return list;
-  }, [phieuList, filterBP, filterTT, filterLaiXe, searchQ, statusMap, getTT]);
+  }, [phieuList, filterBP, filterTT, filterLaiXe, searchQ, statusMap, getTT, sortBy, sortDir, filterFrom, filterTo]);
 
   const stats = useMemo(() => {
     const total = phieuList.length;
@@ -818,26 +815,21 @@ export default function DieuXePage() {
         <h2 style={{ fontSize:20, fontWeight:700, margin:0 }}>🚚 Điều xe</h2>
         {lastFetch && <span style={{ fontSize:11, color:'#9ca3af' }}>Cập nhật {lastFetch}</span>}
         <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
-          {[['Hôm nay', 0], ['±1 ngày', 3], ['±3 ngày', 7]].map(function(item) {
-            const label = item[0], days = item[1];
-            return (
-              <button key={label} onClick={() => setPreset(days)} style={{
-                padding:'5px 10px', border:'1px solid #d1d5db', borderRadius:6,
-                background: 'white', cursor:'pointer', fontSize:12, color:'#374151',
-              }}>{label}</button>
-            );
-          })}
-          <span style={{ color:'#d1d5db', margin:'0 2px' }}>|</span>
+          <span style={{ fontSize:11, color:'#9ca3af' }}>Lọc ngày giao:</span>
           <div style={{ display:'flex', alignItems:'center', gap:4 }}>
-            <input type="date" value={ngayTu}
-              onChange={function(e) { setNgayTu(e.target.value); if (e.target.value > ngayDen) setNgayDen(e.target.value); }}
-              style={{ padding:'5px 8px', border:'1px solid #d1d5db', borderRadius:6, fontSize:13, fontWeight:600 }} />
+            <input type="date" value={filterFrom}
+              onChange={function(e) { setFilterFrom(e.target.value); }}
+              style={{ padding:'5px 8px', border:'1px solid #d1d5db', borderRadius:6, fontSize:13 }} />
             <span style={{ color:'#9ca3af', fontSize:13 }}>→</span>
-            <input type="date" value={ngayDen} min={ngayTu}
-              onChange={function(e) { setNgayDen(e.target.value); }}
-              style={{ padding:'5px 8px', border:'1px solid #d1d5db', borderRadius:6, fontSize:13, fontWeight:600 }} />
+            <input type="date" value={filterTo} min={filterFrom}
+              onChange={function(e) { setFilterTo(e.target.value); }}
+              style={{ padding:'5px 8px', border:'1px solid #d1d5db', borderRadius:6, fontSize:13 }} />
           </div>
-          <button onClick={() => fetchData(ngayTu, ngayDen)} disabled={loading}
+          {(filterFrom || filterTo) && (
+            <button onClick={function() { setFilterFrom(''); setFilterTo(''); }}
+              style={{ padding:'4px 10px', border:'1px solid #fca5a5', borderRadius:6, background:'#fef2f2', color:'#dc2626', cursor:'pointer', fontSize:12 }}>✕ Xoá lọc</button>
+          )}
+          <button onClick={() => fetchData()} disabled={loading}
             style={{ padding:'5px 12px', border:'1px solid #bfdbfe', borderRadius:6, background:'#eff6ff', color:'#1d4ed8', cursor:'pointer', fontSize:13 }}>
             {loading ? '…' : '🔄 Tải lại'}
           </button>
@@ -1072,7 +1064,7 @@ export default function DieuXePage() {
       ) : filtered.length === 0 ? (
         <div style={{ textAlign:'center', padding:60, color:'#9ca3af', background:'white', borderRadius:12, border:'1px solid #e5e7eb' }}>
           <div style={{ fontSize:36, marginBottom:8 }}>📭</div>
-          <div style={{ fontWeight:600, marginBottom:4 }}>Không có chuyến nào {isSingleDay ? ('ngày ' + fmtVN(ngayTu)) : (fmtVN(ngayTu) + ' → ' + fmtVN(ngayDen))}</div>
+          <div style={{ fontWeight:600, marginBottom:4 }}>Chưa có đơn nào</div>
           <div style={{ fontSize:12 }}>Kiểm tra Google Sheets hoặc chọn ngày khác</div>
         </div>
       ) : (
@@ -1104,7 +1096,18 @@ export default function DieuXePage() {
                       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
                         <thead>
                           <tr style={{ background:'#f9fafb', borderBottom:'2px solid #e5e7eb' }}>
-                            {[['#','36px'],['BP','50px'],['Mã / Phiếu','110px'],['Ngày giao','110px'],['Khách hàng','160px'],['Địa chỉ','200px'],['Kho','80px'],['Hàng hóa','160px'],['Trạng thái','100px'],['Cập nhật','80px'],['Lái xe','130px'],['Giao nhận','100px']].map(function(h) {
+                            {[['#','36px'],['BP','50px'],['Mã / Phiếu','110px']].map(function(h) {
+                              return <th key={h[0]} style={{ padding:'9px 10px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6b7280', whiteSpace:'nowrap', width:h[1], minWidth:h[1] }}>{h[0]}</th>;
+                            })}
+                            {[['ngay_len_don','Ngày nhập','90px'],['ngay_can_giao','Ngày giao','90px']].map(function(h) {
+                              const active = sortBy === h[0];
+                              return (
+                                <th key={h[0]} onClick={() => toggleSort(h[0])} style={{ padding:'9px 10px', textAlign:'left', fontSize:11, fontWeight:700, color: active ? '#1d4ed8' : '#6b7280', whiteSpace:'nowrap', width:h[2], minWidth:h[2], cursor:'pointer', userSelect:'none' }}>
+                                  {h[1]} {active ? (sortDir === 'desc' ? '↓' : '↑') : '↕'}
+                                </th>
+                              );
+                            })}
+                            {[['Khách hàng','160px'],['Địa chỉ','200px'],['Kho','80px'],['Hàng hóa','160px'],['Trạng thái','100px'],['Cập nhật','80px'],['Lái xe','130px'],['Giao nhận','100px']].map(function(h) {
                               return <th key={h[0]} style={{ padding:'9px 10px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6b7280', whiteSpace:'nowrap', width:h[1], minWidth:h[1] }}>{h[0]}</th>;
                             })}
                             {activeDriver && <th style={{ padding:'9px 10px', textAlign:'center', fontSize:11, fontWeight:700, color:'#7c3aed', whiteSpace:'nowrap', width:80, minWidth:80 }}>🛒 Giỏ</th>}
@@ -1127,8 +1130,13 @@ export default function DieuXePage() {
                                   <div style={{ fontSize:11, color:'#6b7280', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:110 }} title={p.so_phieu}>{p.so_phieu||'—'}</div>
                                 </td>
                                 <td style={{ padding:'9px 10px', whiteSpace:'nowrap' }}>
+                                  <span style={{ fontSize:11, color: sortBy==='ngay_len_don' ? '#1d4ed8' : '#6b7280', fontWeight: sortBy==='ngay_len_don' ? 600 : 400 }}>
+                                    {p.ngay_len_don ? fmtVN(p.ngay_len_don) : '—'}
+                                  </span>
+                                </td>
+                                <td style={{ padding:'9px 10px', whiteSpace:'nowrap' }}>
                                   {p.ngay_can_giao
-                                    ? <span style={{ fontSize:12, color:'#374151', fontWeight:600 }}>{fmtVN(p.ngay_can_giao)}</span>
+                                    ? <span style={{ fontSize:12, color: sortBy==='ngay_can_giao' ? '#1d4ed8' : '#374151', fontWeight: sortBy==='ngay_can_giao' ? 700 : 600 }}>{fmtVN(p.ngay_can_giao)}</span>
                                     : <span style={{ fontSize:11, color:'#b45309', background:'#fef3c7', padding:'2px 7px', borderRadius:5, fontWeight:700 }}>⚠️ Chưa lịch</span>}
                                   {p.don_gap && (
                                     <div style={{ marginTop:2 }}>
@@ -1842,7 +1850,7 @@ export default function DieuXePage() {
                   <div style={{ fontSize:12, opacity:.8, marginTop:2 }}>
                     🚗 {driverInfo.bien_so || 'Chưa có biển số'}
                     {' · '}👤 Phụ xe: {gn}
-                    {' · '}📅 {ngayTu === ngayDen ? ngayTu : ngayTu + ' → ' + ngayDen}
+                    {' · '}📅 {ngayTu}
                     {' · '}{orders.length} đơn
                   </div>
                 </div>
