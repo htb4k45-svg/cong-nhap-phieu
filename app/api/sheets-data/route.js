@@ -14,4 +14,6 @@ export async function GET(request) {
 
     return NextResponse.json({ phieu, all, errors, debug_csv, from, to });
   } catch (err) {
-    return NextResponse.json({ error: err.mes
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
