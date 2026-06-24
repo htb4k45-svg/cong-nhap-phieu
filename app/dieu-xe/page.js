@@ -130,7 +130,7 @@ export default function DieuXePage() {
   const [chotSummary, setChotSummary]     = useState(null); // { driver, date, thieu: [{so_phieu,ten_kh,ghi_chu}] }
   const [phieuHoiList, setPhieuHoiList]   = useState([]);
   const [hoiModal, setHoiModal]           = useState(null); // driver name
-  const [hoiForm, setHoiForm]             = useState({ nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'', ghi_chu:'' });
+  const [hoiForm, setHoiForm]             = useState({ nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'', ghi_chu:'', kho_nhan:'', nguoi_nhan:'' });
   const [hoiSaving, setHoiSaving]         = useState(false);
   const [hoiThenLenh, setHoiThenLenh]     = useState(false);  // true = opened from "In lệnh" (mandatory flow)
   const [hoiNoHoi, setHoiNoHoi]           = useState(false);  // checkbox "xác nhận không có hàng hồi"
@@ -1625,6 +1625,8 @@ export default function DieuXePage() {
                 loai_hang:      hoiForm.loai_hang || null,
                 so_luong_thung: hoiForm.so_luong_thung ? parseInt(hoiForm.so_luong_thung) : 0,
                 ghi_chu:        hoiForm.ghi_chu || null,
+                kho_nhan:       hoiForm.kho_nhan || null,
+                nguoi_nhan:     hoiForm.nguoi_nhan || null,
                 lai_xe:         hoiModal,
                 ngay_lay:       ngayTu,
               }),
@@ -1632,7 +1634,7 @@ export default function DieuXePage() {
             const data = await res.json();
             if (data.phieu) {
               setPhieuHoiList(prev => [...prev, data.phieu]);
-              setHoiForm({ nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'', ghi_chu:'' });
+              setHoiForm({ nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'', ghi_chu:'', kho_nhan:'', nguoi_nhan:'' });
               showToast('✅ Đã thêm điểm nhận hàng hồi', 'ok');
             } else {
               showToast('Lỗi: ' + (data.error || 'Không rõ'), 'error');
@@ -1740,7 +1742,7 @@ export default function DieuXePage() {
                       </div>
                     ))}
                   </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:10 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:10, marginBottom:10 }}>
                     <div>
                       <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:3 }}>Số thùng</div>
                       <input
@@ -1757,6 +1759,26 @@ export default function DieuXePage() {
                         value={hoiForm.ghi_chu}
                         onChange={e => setHoiForm(prev => ({ ...prev, ghi_chu: e.target.value }))}
                         placeholder="VD: Hàng dễ vỡ, cẩn thận..."
+                        style={{ width:'100%', padding:'6px 9px', border:'1px solid #c4b5fd', borderRadius:6, fontSize:12, outline:'none', background:'white' }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                    <div>
+                      <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:3 }}>Kho nhận tại HH</div>
+                      <input
+                        value={hoiForm.kho_nhan}
+                        onChange={e => setHoiForm(prev => ({ ...prev, kho_nhan: e.target.value }))}
+                        placeholder="VD: Kho Miền Nam, Kho HN..."
+                        style={{ width:'100%', padding:'6px 9px', border:'1px solid #c4b5fd', borderRadius:6, fontSize:12, outline:'none', background:'white' }}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:3 }}>Người nhận tại HH</div>
+                      <input
+                        value={hoiForm.nguoi_nhan}
+                        onChange={e => setHoiForm(prev => ({ ...prev, nguoi_nhan: e.target.value }))}
+                        placeholder="VD: Nguyễn Văn A..."
                         style={{ width:'100%', padding:'6px 9px', border:'1px solid #c4b5fd', borderRadius:6, fontSize:12, outline:'none', background:'white' }}
                       />
                     </div>

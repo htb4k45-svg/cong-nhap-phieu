@@ -29,6 +29,7 @@ export async function POST(request) {
     const {
       so_phieu_hoi, nguon_ten, nguon_dia_chi, nguon_sdt,
       loai_hang, so_luong_thung, so_kg, ghi_chu,
+      kho_nhan, nguoi_nhan,
       lai_xe, ngay_lay,
     } = body;
 
@@ -48,6 +49,8 @@ export async function POST(request) {
         so_luong_thung: so_luong_thung ? parseInt(so_luong_thung) : 0,
         so_kg:          so_kg ? parseFloat(so_kg) : null,
         ghi_chu:        ghi_chu || null,
+        kho_nhan:       kho_nhan || null,
+        nguoi_nhan:     nguoi_nhan || null,
         lai_xe:         lai_xe || null,
         ngay_lay,
         trang_thai:     'cho_lay',
