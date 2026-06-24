@@ -10,9 +10,9 @@ export async function GET(request) {
     const from  = searchParams.get('from') || searchParams.get('date') || today;
     const to    = searchParams.get('to')   || from;
 
-    const { phieu, all, errors } = await fetchPhieuByDateRange(from, to);
+    const { phieu, all, errors, debug_csv } = await fetchPhieuByDateRange(from, to);
 
-    return NextResponse.json({ phieu, all, errors, from, to });
+    return NextResponse.json({ phieu, all, errors, debug_csv, from, to });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
