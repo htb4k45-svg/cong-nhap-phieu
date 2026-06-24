@@ -161,7 +161,6 @@ function parseSheet(ws) {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function ImportPage() {
-  const [mode, setMode]           = useState('giao_di'); // 'giao_di' | 'thu_hoi'
   const [sheets, setSheets]       = useState([]);
   const [selected, setSelected]   = useState([]);
   const [preview, setPreview]     = useState([]);
@@ -169,46 +168,6 @@ export default function ImportPage() {
   const [result, setResult]       = useState(null);
   const [fileName, setFileName]   = useState('');
   const [fileFormat, setFileFormat] = useState(null);
-
-  // ── Thu hồi form ─────────────────────────────────────────────────────────
-  const emptyHoi = { nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'0', ghi_chu:'', kho_nhan:'', nguoi_nhan:'', ngay_lay: new Date().toISOString().split('T')[0] };
-  const [hoiForm, setHoiForm]     = useState(emptyHoi);
-  const [hoiSaving, setHoiSaving] = useState(false);
-  const [hoiResult, setHoiResult] = useState(null);
-
-  const handleHoiSubmit = async () => {
-    if (!hoiForm.nguon_ten.trim()) return;
-    setHoiSaving(true);
-    setHoiResult(null);
-    try {
-      const res = await fetch('/api/phieu-hoi', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          nguon_ten:      hoiForm.nguon_ten.trim(),
-          nguon_dia_chi:  hoiForm.nguon_dia_chi || null,
-          nguon_sdt:      hoiForm.nguon_sdt || null,
-          loai_hang:      hoiForm.loai_hang || null,
-          so_luong_thung: parseInt(hoiForm.so_luong_thung) || 0,
-          ghi_chu:        hoiForm.ghi_chu || null,
-          kho_nhan:       hoiForm.kho_nhan || null,
-          nguoi_nhan:     hoiForm.nguoi_nhan || null,
-          ngay_lay:       hoiForm.ngay_lay,
-        }),
-      });
-      const data = await res.json();
-      if (data.phieu) {
-        setHoiResult({ ok: true });
-        setHoiForm(emptyHoi);
-      } else {
-        setHoiResult({ error: data.error || 'Lỗi không rõ' });
-      }
-    } catch (e) {
-      setHoiResult({ error: e.message });
-    } finally {
-      setHoiSaving(false);
-    }
-  };
 
   const handleFile = (e) => {
     const file = e.target.files[0];
@@ -264,35 +223,13 @@ export default function ImportPage() {
 
   const hasMaLenh = preview.some(p => p.ma_lenh);
 
-  const hoiFields = [
-    { key:'nguon_ten',     label:'Tên điểm lấy *',    placeholder:'Công ty / Khách trả hàng' },
-    { key:'nguon_dia_chi', label:'Địa chỉ điểm lấy',  placeholder:'Số nhà, đường, quận...' },
-    { key:'nguon_sdt',     label:'SĐT liên hệ',       placeholder:'0909...' },
-    { key:'loai_hang',     label:'Loại hàng',         placeholder:'Giấy A4, hàng lỗi, hàng thừa...' },
-    { key:'kho_nhan',      label:'Kho nhận tại HH',   placeholder:'Kho Miền Nam, Kho HN...' },
-    { key:'nguoi_nhan',    label:'Người nhận tại HH', placeholder:'Nguyễn Văn A...' },
-  ];
-
   return (
     <div className="max-w-5xl">
       <div className="flex items-center gap-3 mb-6" style={{ flexWrap:'wrap' }}>
-        <Link href="/" className="text-sm text-blue-600 hover:underline">← Về form nhập phiếu</Link>
+        <Link href="/" className="text-sm text-blue-600 hover:underline">← Về trang nhập phiếu</Link>
         <span className="text-gray-300">|</span>
-        <h2 className="text-lg font-bold text-gray-900">Nhập đơn hàng</h2>
-
-        {/* Mode toggle */}
-        <div style={{ display:'flex', background:'#f3f4f6', borderRadius:8, padding:3, gap:2 }}>
-          {[['giao_di','🚚 Giao đi'],['thu_hoi','📥 Thu hồi']].map(([m, label]) => (
-            <button key={m} onClick={() => { setMode(m); setResult(null); setHoiResult(null); }}
-              style={{ padding:'5px 16px', borderRadius:6, border:'none', cursor:'pointer', fontSize:13, fontWeight:600,
-                background: mode===m ? (m==='thu_hoi'?'#7c3aed':'#1d4ed8') : 'transparent',
-                color: mode===m ? 'white' : '#6b7280', transition:'all .15s' }}>
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {mode === 'giao_di' && fileFormat && (
+        <h2 className="text-lg font-bold text-gray-900">Import đơn hàng từ Excel</h2>
+        {fileFormat && (
           <span className="ml-2 text-xs px-2 py-1 rounded font-medium"
             style={{background: fileFormat==='MT'?'#dbeafe': fileFormat==='B2B'?'#dcfce7':'#fef9c3',
                     color: fileFormat==='MT'?'#1d4ed8': fileFormat==='B2B'?'#15803d':'#854d0e'}}>
@@ -301,191 +238,126 @@ export default function ImportPage() {
         )}
       </div>
 
-      {/* ── THU HỒI FORM ─────────────────────────────────────────────────── */}
-      {mode === 'thu_hoi' && (
-        <div style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:12, padding:24, marginBottom:20 }}>
-          <div style={{ fontSize:15, fontWeight:700, color:'#7c3aed', marginBottom:16 }}>📥 Tạo phiếu thu hồi hàng</div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-            {hoiFields.map(f => (
-              <div key={f.key}>
-                <div style={{ fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>{f.label}</div>
-                <input value={hoiForm[f.key]}
-                  onChange={e => setHoiForm(prev => ({ ...prev, [f.key]: e.target.value }))}
-                  placeholder={f.placeholder}
-                  style={{ width:'100%', padding:'8px 10px', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, outline:'none', boxSizing:'border-box' }}
-                />
-              </div>
+      {/* Upload */}
+      <div className="section-card mb-6">
+        <h3 className="section-title">1. Chọn file Excel</h3>
+        <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors">
+          <span className="text-3xl mb-2">📂</span>
+          <span className="text-sm text-gray-600 font-medium">
+            {fileName || 'Click để chọn file Excel'}
+          </span>
+          <span className="text-xs text-gray-400 mt-1">Hỗ trợ: Vận xe 2026 (B2B) và Vận đơn thị trường (MT)</span>
+          <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFile} />
+        </label>
+      </div>
+
+      {/* Chọn sheet */}
+      {sheets.length > 0 && (
+        <div className="section-card mb-6">
+          <h3 className="section-title">2. Chọn sheet cần import</h3>
+          <div className="flex flex-wrap gap-3">
+            {sheets.map(s => (
+              <label key={s.name} className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer transition-colors
+                ${selected.includes(s.name) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
+                <input type="checkbox" className="hidden"
+                  checked={selected.includes(s.name)}
+                  onChange={() => toggleSheet(s.name)} />
+                <span className="font-medium">{s.name.trim()}</span>
+                <span className={`text-xs ${selected.includes(s.name) ? 'text-blue-200' : 'text-gray-400'}`}>
+                  {s.phieu.length} phiếu
+                </span>
+                {s.format && (
+                  <span className={`text-xs font-bold ${selected.includes(s.name) ? 'text-blue-100' : s.format==='MT'?'text-blue-600':'text-green-600'}`}>
+                    {s.format}
+                  </span>
+                )}
+              </label>
             ))}
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'140px 100px 1fr', gap:12, marginBottom:18 }}>
-            <div>
-              <div style={{ fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Ngày lấy *</div>
-              <input type="date" value={hoiForm.ngay_lay}
-                onChange={e => setHoiForm(prev => ({ ...prev, ngay_lay: e.target.value }))}
-                style={{ width:'100%', padding:'8px 10px', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, outline:'none' }}
-              />
-            </div>
-            <div>
-              <div style={{ fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Số thùng</div>
-              <input type="number" min="0" value={hoiForm.so_luong_thung}
-                onChange={e => setHoiForm(prev => ({ ...prev, so_luong_thung: e.target.value }))}
-                style={{ width:'100%', padding:'8px 10px', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, outline:'none' }}
-              />
-            </div>
-            <div>
-              <div style={{ fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Ghi chú</div>
-              <input value={hoiForm.ghi_chu}
-                onChange={e => setHoiForm(prev => ({ ...prev, ghi_chu: e.target.value }))}
-                placeholder="Hàng dễ vỡ, cẩn thận..."
-                style={{ width:'100%', padding:'8px 10px', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, outline:'none' }}
-              />
-            </div>
-          </div>
-          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            <button onClick={handleHoiSubmit}
-              disabled={hoiSaving || !hoiForm.nguon_ten.trim() || !hoiForm.ngay_lay}
-              style={{ padding:'9px 24px',
-                background: (!hoiForm.nguon_ten.trim() || !hoiForm.ngay_lay) ? '#e5e7eb' : '#7c3aed',
-                color: (!hoiForm.nguon_ten.trim() || !hoiForm.ngay_lay) ? '#9ca3af' : 'white',
-                border:'none', borderRadius:8, fontWeight:700, fontSize:14,
-                cursor: (!hoiForm.nguon_ten.trim() || !hoiForm.ngay_lay) ? 'default' : 'pointer',
-                opacity: hoiSaving ? 0.6 : 1 }}>
-              {hoiSaving ? '⏳ Đang lưu...' : '💾 Lưu phiếu thu hồi'}
-            </button>
-            {hoiResult && hoiResult.ok && (
-              <span style={{ color:'#059669', fontWeight:600, fontSize:13 }}>✅ Lưu thành công! Phiếu có trong danh sách hàng hồi.</span>
-            )}
-            {hoiResult && hoiResult.error && (
-              <span style={{ color:'#dc2626', fontSize:13 }}>❌ {hoiResult.error}</span>
-            )}
+          <p className="text-sm text-gray-500 mt-3">
+            Tổng cộng: <strong>{totalSelected} phiếu</strong> sẽ được import
+          </p>
+        </div>
+      )}
+
+      {/* Preview */}
+      {preview.length > 0 && (
+        <div className="section-card mb-6">
+          <h3 className="section-title">3. Xem trước (20 dòng đầu)</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50 text-left text-gray-500">
+                  <th className="px-3 py-2">BP</th>
+                  {hasMaLenh && <th className="px-3 py-2">Mã Lệnh</th>}
+                  <th className="px-3 py-2">Số phiếu</th>
+                  <th className="px-3 py-2">Ngày nhập</th>
+                  <th className="px-3 py-2">Khách hàng</th>
+                  <th className="px-3 py-2">Địa chỉ</th>
+                  <th className="px-3 py-2">Người giao</th>
+                  <th className="px-3 py-2">Ghi chú / SP</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {preview.map((p, i) => (
+                  <tr key={i} className="hover:bg-gray-50">
+                    <td className="px-3 py-2">{formatBadge(p.bo_phan)}</td>
+                    {hasMaLenh && <td className="px-3 py-2 font-medium text-purple-700">{p.ma_lenh || '—'}</td>}
+                    <td className="px-3 py-2 font-medium text-blue-700 max-w-[120px] truncate" title={p.so_phieu}>{p.so_phieu}</td>
+                    <td className="px-3 py-2">{p.ngay_nhap || '—'}</td>
+                    <td className="px-3 py-2 max-w-[150px] truncate" title={p.ten_kh}>{p.ten_kh}</td>
+                    <td className="px-3 py-2 max-w-[150px] truncate" title={p.dia_chi_giao}>{p.dia_chi_giao}</td>
+                    <td className="px-3 py-2 text-gray-500">{[p.lai_xe, p.giao_nhan].filter(Boolean).join(' / ') || '—'}</td>
+                    <td className="px-3 py-2 text-gray-500 max-w-[120px] truncate">
+                      {p.ghi_chu || (p.san_pham?.length ? `${p.san_pham.length} SP` : '—')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
 
-      {/* ── GIAO ĐI (Excel import) ───────────────────────────────────────── */}
-      {mode === 'giao_di' && (
-        <div>
-          {/* Upload */}
-          <div className="section-card mb-6">
-            <h3 className="section-title">1. Chọn file Excel</h3>
-            <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors">
-              <span className="text-3xl mb-2">📂</span>
-              <span className="text-sm text-gray-600 font-medium">
-                {fileName || 'Click để chọn file Excel'}
-              </span>
-              <span className="text-xs text-gray-400 mt-1">Hỗ trợ: Vận xe 2026 (B2B) và Vận đơn thị trường (MT)</span>
-              <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFile} />
-            </label>
-          </div>
+      {/* Nút import */}
+      {totalSelected > 0 && !result && (
+        <div className="flex justify-end">
+          <button className="btn-primary flex items-center gap-2 text-base px-8 py-3"
+            onClick={handleImport} disabled={importing}>
+            {importing
+              ? <><span className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Đang import…</>
+              : `⬆ Import ${totalSelected} phiếu vào database`}
+          </button>
+        </div>
+      )}
 
-          {/* Chọn sheet */}
-          {sheets.length > 0 && (
-            <div className="section-card mb-6">
-              <h3 className="section-title">2. Chọn sheet cần import</h3>
-              <div className="flex flex-wrap gap-3">
-                {sheets.map(s => (
-                  <label key={s.name} className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer transition-colors
-                    ${selected.includes(s.name) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}>
-                    <input type="checkbox" className="hidden"
-                      checked={selected.includes(s.name)}
-                      onChange={() => toggleSheet(s.name)} />
-                    <span className="font-medium">{s.name.trim()}</span>
-                    <span className={`text-xs ${selected.includes(s.name) ? 'text-blue-200' : 'text-gray-400'}`}>
-                      {s.phieu.length} phiếu
-                    </span>
-                    {s.format && (
-                      <span className={`text-xs font-bold ${selected.includes(s.name) ? 'text-blue-100' : s.format==='MT'?'text-blue-600':'text-green-600'}`}>
-                        {s.format}
-                      </span>
-                    )}
-                  </label>
-                ))}
+      {/* Kết quả */}
+      {result && (
+        <div className={`section-card ${result.error ? 'border-red-200' : 'border-green-200'}`}>
+          {result.error ? (
+            <p className="text-red-600">❌ Lỗi: {result.error}</p>
+          ) : (
+            <div>
+              <p className="text-green-700 font-semibold text-lg">✅ Import hoàn tất!</p>
+              <div className="mt-2 flex gap-6 text-sm">
+                <span className="text-green-600">✓ Thành công: <strong>{result.success}</strong></span>
+                <span className="text-gray-500">⏭ Bỏ qua (trùng): <strong>{result.skipped}</strong></span>
+                {result.errors?.length > 0 && (
+                  <span className="text-red-500">✗ Lỗi: <strong>{result.errors.length}</strong></span>
+                )}
               </div>
-              <p className="text-sm text-gray-500 mt-3">
-                Tổng cộng: <strong>{totalSelected} phiếu</strong> sẽ được import
-              </p>
-            </div>
-          )}
-
-          {/* Preview */}
-          {preview.length > 0 && (
-            <div className="section-card mb-6">
-              <h3 className="section-title">3. Xem trước (20 dòng đầu)</h3>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-gray-50 text-left text-gray-500">
-                      <th className="px-3 py-2">BP</th>
-                      {hasMaLenh && <th className="px-3 py-2">Mã Lệnh</th>}
-                      <th className="px-3 py-2">Số phiếu</th>
-                      <th className="px-3 py-2">Ngày nhập</th>
-                      <th className="px-3 py-2">Khách hàng</th>
-                      <th className="px-3 py-2">Địa chỉ</th>
-                      <th className="px-3 py-2">Người giao</th>
-                      <th className="px-3 py-2">Ghi chú / SP</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {preview.map((p, i) => (
-                      <tr key={i} className="hover:bg-gray-50">
-                        <td className="px-3 py-2">{formatBadge(p.bo_phan)}</td>
-                        {hasMaLenh && <td className="px-3 py-2 font-medium text-purple-700">{p.ma_lenh || '—'}</td>}
-                        <td className="px-3 py-2 font-medium text-blue-700 max-w-[120px] truncate" title={p.so_phieu}>{p.so_phieu}</td>
-                        <td className="px-3 py-2">{p.ngay_nhap || '—'}</td>
-                        <td className="px-3 py-2 max-w-[150px] truncate" title={p.ten_kh}>{p.ten_kh}</td>
-                        <td className="px-3 py-2 max-w-[150px] truncate" title={p.dia_chi_giao}>{p.dia_chi_giao}</td>
-                        <td className="px-3 py-2 text-gray-500">{[p.lai_xe, p.giao_nhan].filter(Boolean).join(' / ') || '—'}</td>
-                        <td className="px-3 py-2 text-gray-500 max-w-[120px] truncate">
-                          {p.ghi_chu || (p.san_pham?.length ? `${p.san_pham.length} SP` : '—')}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Nút import */}
-          {totalSelected > 0 && !result && (
-            <div className="flex justify-end">
-              <button className="btn-primary flex items-center gap-2 text-base px-8 py-3"
-                onClick={handleImport} disabled={importing}>
-                {importing
-                  ? <><span className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Đang import…</>
-                  : `⬆ Import ${totalSelected} phiếu vào database`}
-              </button>
-            </div>
-          )}
-
-          {/* Kết quả */}
-          {result && (
-            <div className={`section-card ${result.error ? 'border-red-200' : 'border-green-200'}`}>
-              {result.error ? (
-                <p className="text-red-600">❌ Lỗi: {result.error}</p>
-              ) : (
-                <div>
-                  <p className="text-green-700 font-semibold text-lg">✅ Import hoàn tất!</p>
-                  <div className="mt-2 flex gap-6 text-sm">
-                    <span className="text-green-600">✓ Thành công: <strong>{result.success}</strong></span>
-                    <span className="text-gray-500">⏭ Bỏ qua (trùng): <strong>{result.skipped}</strong></span>
-                    {result.errors?.length > 0 && (
-                      <span className="text-red-500">✗ Lỗi: <strong>{result.errors.length}</strong></span>
-                    )}
-                  </div>
-                  {result.errors?.length > 0 && (
-                    <div className="mt-3 text-xs text-red-600 max-h-40 overflow-y-auto">
-                      {result.errors.map((e, i) => <p key={i}>{e.so_phieu}: {e.error}</p>)}
-                    </div>
-                  )}
-                  <div className="flex gap-3 mt-4">
-                    <Link href="/" className="btn-primary inline-block text-sm">← Về form nhập phiếu</Link>
-                    <button className="text-sm text-blue-600 hover:underline" onClick={() => { setResult(null); setSheets([]); setFileName(''); }}>
-                      Import file khác
-                    </button>
-                  </div>
+              {result.errors?.length > 0 && (
+                <div className="mt-3 text-xs text-red-600 max-h-40 overflow-y-auto">
+                  {result.errors.map((e, i) => <p key={i}>{e.so_phieu}: {e.error}</p>)}
                 </div>
               )}
+              <div className="flex gap-3 mt-4">
+                <Link href="/" className="btn-primary inline-block text-sm">← Về trang nhập phiếu</Link>
+                <button className="text-sm text-blue-600 hover:underline"
+                  onClick={() => { setResult(null); setSheets([]); setFileName(''); }}>
+                  Import file khác
+                </button>
+              </div>
             </div>
           )}
         </div>
