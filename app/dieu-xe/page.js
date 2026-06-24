@@ -90,12 +90,12 @@ function extractKhuVuc(diaChi, matcherFn) {
 }
 
 function getTongThung(p) {
-  if (p.ghi_chu) {
-    const m = p.ghi_chu.match(/Tổng:\s*(\d+)/);
-    if (m) return parseInt(m[1]);
-  }
+  // Ưu tiên tong_thung đã tính sẵn từ parser (đã quy đổi đúng đơn vị)
+  if (p.tong_thung !== undefined && p.tong_thung !== null) return p.tong_thung;
   if (p.san_pham && p.san_pham.length) {
-    return p.san_pham.reduce(function(acc, sp) { return acc + (sp.so_luong || 0); }, 0);
+    return p.san_pham.reduce(function(acc, sp) {
+      return acc + (sp.so_luong_thung !== undefined ? sp.so_luong_thung : (sp.so_luong || 0));
+    }, 0);
   }
   return 0;
 }
@@ -129,6 +129,8 @@ export default function DieuXePage() {
   const [hoiModal, setHoiModal]           = useState(null); // driver name
   const [hoiForm, setHoiForm]             = useState({ nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'', ghi_chu:'' });
   const [hoiSaving, setHoiSaving]         = useState(false);
+  const [hoiThenLenh, setHoiThenLenh]     = useState(false);  // true = opened from "In lệnh" (mandatory flow)
+  const [hoiNoHoi, setHoiNoHoi]           = useState(false);  // checkbox "xác nhận không có hàng hồi"
 
   const fetchData = useCallback(async (from, to) => {
     setLoading(true);
@@ -259,11 +261,16 @@ export default function DieuXePage() {
     const orderRows = orders.map((p, i) => {
       const spCells = spCodes.map(code => {
         const sp = (p.san_pham || []).find(s => s.ma_sp === code);
-        return `<td class="center">${sp ? sp.so_luong : ''}</td>`;
+        if (!sp) return `<td class="center"></td>`;
+        // Hiển thị thùng (đã quy đổi), nếu B2B thì kèm số Ream
+        const thungSp = sp.so_luong_thung !== undefined ? sp.so_luong_thung : sp.so_luong;
+        const isRaw = p.don_vi_sp === 'ream';
+        const label = isRaw && sp.so_luong !== thungSp
+          ? `${thungSp}<br/><span style="font-size:7.5pt;color:#777">${sp.so_luong}R</span>`
+          : `${thungSp}`;
+        return `<td class="center">${label}</td>`;
       }).join('');
-      const thung = p.san_pham && p.san_pham.length > 0
-        ? p.san_pham.reduce((s, x) => s + (x.so_luong || 0), 0)
-        : '';
+      const thung = getTongThung(p) || '';
       return `<tr>
         <td class="center">${i+1}</td>
         <td class="center"></td>
@@ -279,12 +286,13 @@ export default function DieuXePage() {
     const totalCells = spCodes.map((_, i) => {
       const total = orders.reduce((s, p) => {
         const sp = (p.san_pham || []).find(x => x.ma_sp === spCodes[i]);
-        return s + (sp ? (sp.so_luong || 0) : 0);
+        if (!sp) return s;
+        const thungSp = sp.so_luong_thung !== undefined ? sp.so_luong_thung : sp.so_luong;
+        return s + (thungSp || 0);
       }, 0);
       return `<td class="center bold">${total || ''}</td>`;
     }).join('');
-    const totalThung = orders.reduce((s, p) =>
-      s + (p.san_pham || []).reduce((t, x) => t + (x.so_luong || 0), 0), 0);
+    const totalThung = orders.reduce((s, p) => s + (getTongThung(p) || 0), 0);
 
     const html = `<!DOCTYPE html>
 <html lang="vi">
@@ -520,6 +528,18 @@ export default function DieuXePage() {
       const lx = s ? (s.lai_xe_phan_cong || p.lai_xe) : p.lai_xe;
       return lx === chotModal;
     });
+
+    // Kiểm tra hàng hồi chưa xác nhận — bắt buộc xử lý trước khi chốt
+    const uncheckedHoi = phieuHoiList.filter(h =>
+      h.lai_xe === chotModal &&
+      h.trang_thai === 'cho_lay' &&
+      !(chotData.phieuHoiDaLay && chotData.phieuHoiDaLay.has(h.id))
+    );
+    if (uncheckedHoi.length > 0) {
+      showToast(`❌ Còn ${uncheckedHoi.length} điểm hàng hồi chưa xác nhận! Tick "Đã lấy" hoặc xóa trước khi chốt.`, 'error');
+      return;
+    }
+
     setChotSaving(true);
     try {
       // 1. Bulk update trạng thái + ghi chú thiếu từng đơn
@@ -948,7 +968,7 @@ export default function DieuXePage() {
                             {grp.showLoad && d.total > 0 && (
                               <div style={{ display:'flex', gap:4, marginTop:6 }}>
                                 <button
-                                  onClick={e => { e.stopPropagation(); setLenhModal(name); }}
+                                  onClick={e => { e.stopPropagation(); setHoiThenLenh(true); setHoiNoHoi(false); setHoiModal(name); }}
                                   style={{ flex:1, padding:'3px 0', fontSize:11, fontWeight:700,
                                     background:'#1e3a5f', color:'white', border:'none', borderRadius:5, cursor:'pointer' }}>
                                   📋 In lệnh
@@ -1095,7 +1115,7 @@ export default function DieuXePage() {
                             const ttObj  = TRANG_THAI[getTT(p)] || TRANG_THAI.cho_giao;
                             const isBusy = updatingKey === p.row_key;
                             const kvInfo = groupByArea ? null : extractKhuVuc(p.dia_chi_giao, huyenMatcher);
-                            const rowBg  = getTT(p)==='da_giao' ? '#f0fdf4' : !p.ngay_can_giao ? '#fffbeb' : 'white';
+                            const rowBg  = getTT(p)==='da_giao' ? '#f0fdf4' : p.don_gap ? '#fff7ed' : !p.ngay_can_giao ? '#fffbeb' : 'white';
                             return (
                               <tr key={p.row_key} style={{ borderBottom:'1px solid #f3f4f6', background: rowBg }}>
                                 <td style={{ padding:'9px 10px', color:'#9ca3af', fontSize:11 }}>{i+1}</td>
@@ -1110,6 +1130,11 @@ export default function DieuXePage() {
                                   {p.ngay_can_giao
                                     ? <span style={{ fontSize:12, color:'#374151', fontWeight:600 }}>{fmtVN(p.ngay_can_giao)}</span>
                                     : <span style={{ fontSize:11, color:'#b45309', background:'#fef3c7', padding:'2px 7px', borderRadius:5, fontWeight:700 }}>⚠️ Chưa lịch</span>}
+                                  {p.don_gap && (
+                                    <div style={{ marginTop:2 }}>
+                                      <span style={{ fontSize:10, fontWeight:800, color:'#c2410c', background:'#ffedd5', padding:'1px 6px', borderRadius:4, border:'1px solid #fed7aa' }}>⚡ Gấp</span>
+                                    </div>
+                                  )}
                                 </td>
                                 <td style={{ padding:'9px 10px' }}>
                                   <div style={{ fontWeight:600, color:'#111827', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:160 }} title={p.ten_kh}>{p.ten_kh||'—'}</div>
@@ -1131,10 +1156,22 @@ export default function DieuXePage() {
                                 <td style={{ padding:'9px 10px', maxWidth:160 }}>
                                   {p.san_pham && p.san_pham.length > 0 ? (
                                     <div>
-                                      {p.san_pham.slice(0,3).map(function(sp) {
-                                        return <div key={sp.ma_sp} style={{ fontSize:11, color:'#374151', whiteSpace:'nowrap' }}><span style={{ color:'#6b7280' }}>{sp.ma_sp}:</span> <strong>{sp.so_luong}</strong></div>;
+                                      {p.san_pham.map(function(sp) {
+                                        const thung = sp.so_luong_thung !== undefined ? sp.so_luong_thung : sp.so_luong;
+                                        const isRaw = p.don_vi_sp === 'ream';
+                                        return (
+                                          <div key={sp.ma_sp} style={{ fontSize:11, color:'#374151', whiteSpace:'nowrap' }}>
+                                            <span style={{ color:'#6b7280' }}>{sp.ma_sp}:</span>{' '}
+                                            <strong>{thung} thùng</strong>
+                                            {isRaw && sp.so_luong !== thung && (
+                                              <span style={{ fontSize:10, color:'#9ca3af' }}> ({sp.so_luong}R)</span>
+                                            )}
+                                          </div>
+                                        );
                                       })}
-                                      {p.san_pham.length > 3 && <div style={{ fontSize:10, color:'#9ca3af' }}>+{p.san_pham.length - 3} sp nữa</div>}
+                                      {p.tong_thung > 0 && (
+                                        <div style={{ marginTop:2, fontSize:11, fontWeight:700, color:'#1d4ed8' }}>= {p.tong_thung} thùng</div>
+                                      )}
                                     </div>
                                   ) : p.ghi_chu ? (
                                     <span style={{ fontSize:11, color:'#6b7280' }} title={p.ghi_chu}>{p.ghi_chu.length > 45 ? p.ghi_chu.slice(0,45)+'…' : p.ghi_chu}</span>
@@ -1278,7 +1315,7 @@ export default function DieuXePage() {
             </div>
             <div style={{ flex:1 }} />
             <button
-              onClick={() => setLenhModal(activeDriver)}
+              onClick={() => { setHoiThenLenh(true); setHoiNoHoi(false); setHoiModal(activeDriver); }}
               disabled={cartOrders.length === 0}
               style={{ padding:'8px 18px', background: cartOrders.length === 0 ? '#4b6a8a' : '#f59e0b', color: cartOrders.length === 0 ? '#9ca3af' : '#1e3a5f', border:'none', borderRadius:8, fontWeight:800, fontSize:13, cursor: cartOrders.length===0 ? 'default' : 'pointer' }}>
               📋 Xem giỏ & In lệnh xe
@@ -1525,4 +1562,345 @@ export default function DieuXePage() {
                                   {alreadyDone
                                     ? <span style={{ color:'#059669', fontWeight:700 }}>✅</span>
                                     : <input type="checkbox" checked={!!isDaLay} onChange={() => {
-                                        setChotDat
+                                        setChotData(prev => {
+                                          const next = new Set(prev.phieuHoiDaLay || []);
+                                          if (next.has(h.id)) next.delete(h.id); else next.add(h.id);
+                                          return { ...prev, phieuHoiDaLay: next };
+                                        });
+                                      }} style={{ width:16, height:16, cursor:'pointer', accentColor:'#7c3aed' }} />
+                                  }
+                                </td>
+                                <td style={{ padding:'6px 8px', fontWeight:600, color: (isDaLay||alreadyDone)?'#059669':'#374151' }}>{h.nguon_ten}</td>
+                                <td style={{ padding:'6px 8px', color:'#6b7280', maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{h.nguon_dia_chi || '—'}</td>
+                                <td style={{ padding:'6px 8px', color:'#374151' }}>{h.loai_hang || '—'}</td>
+                                <td style={{ padding:'6px 8px', textAlign:'center', fontWeight:700 }}>{h.so_luong_thung || 0}</td>
+                                <td style={{ padding:'6px 8px', color:'#6b7280', fontSize:11 }}>{h.ghi_chu || ''}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Footer */}
+              <div style={{ padding:'12px 20px', borderTop:'1px solid #e5e7eb', display:'flex', gap:8, justifyContent:'flex-end' }}>
+                <button onClick={() => setChotModal(null)} style={{ padding:'8px 16px', border:'1px solid #d1d5db', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>Huỷ</button>
+                <button
+                  onClick={submitChot}
+                  disabled={chotSaving || orders.length === 0}
+                  style={{ padding:'8px 24px', background: orders.length===0?'#9ca3af':'#059669', color:'white', border:'none', borderRadius:8, fontWeight:800, fontSize:13, cursor: orders.length===0?'default':'pointer', opacity: chotSaving?0.7:1 }}>
+                  {chotSaving ? '⏳ Đang chốt...' : `✅ Xác nhận chốt ${orders.length} đơn`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── MODAL QUẢN LÝ HÀNG HỒI ── */}
+      {hoiModal && (() => {
+        const hoiItems = phieuHoiList.filter(h => h.lai_xe === hoiModal);
+
+        const addHoi = async () => {
+          if (!hoiForm.nguon_ten.trim()) return;
+          setHoiSaving(true);
+          try {
+            const res = await fetch('/api/phieu-hoi', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                nguon_ten:      hoiForm.nguon_ten.trim(),
+                nguon_dia_chi:  hoiForm.nguon_dia_chi || null,
+                nguon_sdt:      hoiForm.nguon_sdt || null,
+                loai_hang:      hoiForm.loai_hang || null,
+                so_luong_thung: hoiForm.so_luong_thung ? parseInt(hoiForm.so_luong_thung) : 0,
+                ghi_chu:        hoiForm.ghi_chu || null,
+                lai_xe:         hoiModal,
+                ngay_lay:       ngayTu,
+              }),
+            });
+            const data = await res.json();
+            if (data.phieu) {
+              setPhieuHoiList(prev => [...prev, data.phieu]);
+              setHoiForm({ nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'', ghi_chu:'' });
+              showToast('✅ Đã thêm điểm nhận hàng hồi', 'ok');
+            } else {
+              showToast('Lỗi: ' + (data.error || 'Không rõ'), 'error');
+            }
+          } catch(e) {
+            showToast('Lỗi thêm hàng hồi: ' + e.message, 'error');
+          } finally {
+            setHoiSaving(false);
+          }
+        };
+
+        const deleteHoi = async (id) => {
+          try {
+            const res = await fetch(`/api/phieu-hoi?id=${id}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.ok) {
+              setPhieuHoiList(prev => prev.filter(h => h.id !== id));
+              showToast('Đã xóa điểm lấy', 'ok');
+            }
+          } catch(e) {
+            showToast('Lỗi xóa: ' + e.message, 'error');
+          }
+        };
+
+        return (
+          <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.55)', zIndex:10003, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+            onClick={() => setHoiModal(null)}>
+            <div style={{ background:'white', borderRadius:14, width:'100%', maxWidth:700, maxHeight:'90vh', overflow:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.3)' }}
+              onClick={e => e.stopPropagation()}>
+              {/* Header */}
+              <div style={{ background:'#7c3aed', color:'white', padding:'14px 20px', borderRadius:'14px 14px 0 0', display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:800, fontSize:16 }}>
+                    📥 {hoiThenLenh ? '⚠️ Khai báo Hàng hồi (bắt buộc)' : 'Hàng hồi'} — {hoiModal}
+                  </div>
+                  <div style={{ fontSize:12, opacity:.85, marginTop:2 }}>
+                    {hoiThenLenh
+                      ? 'Phải khai báo điểm lấy HOẶC xác nhận không có hàng hồi trước khi in lệnh · ' + ngayTu
+                      : 'Hàng đối tác trả về / thu gom trong cùng chuyến · ' + ngayTu}
+                  </div>
+                </div>
+                <button onClick={() => setHoiModal(null)} style={{ background:'rgba(255,255,255,.2)', border:'none', color:'white', borderRadius:8, padding:'5px 12px', cursor:'pointer', fontSize:14 }}>✕</button>
+              </div>
+
+              <div style={{ padding:'16px 20px' }}>
+                {/* Existing items */}
+                {hoiItems.length > 0 && (
+                  <div style={{ marginBottom:18 }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:'#374151', marginBottom:8 }}>Danh sách điểm nhận ({hoiItems.length})</div>
+                    <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                      <thead>
+                        <tr style={{ background:'#f3e8ff' }}>
+                          {['Điểm lấy','Địa chỉ','Loại hàng','Thùng','Trạng thái',''].map(h => (
+                            <th key={h} style={{ padding:'6px 8px', textAlign:'left', fontWeight:700, color:'#7c3aed', borderBottom:'2px solid #d8b4fe', whiteSpace:'nowrap' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {hoiItems.map((h, i) => (
+                          <tr key={h.id} style={{ borderBottom:'1px solid #f3f4f6', background: h.trang_thai==='da_lay'?'#f0fdf4':(i%2===0?'white':'#fafafa') }}>
+                            <td style={{ padding:'6px 8px', fontWeight:600 }}>{h.nguon_ten}</td>
+                            <td style={{ padding:'6px 8px', color:'#6b7280', maxWidth:150, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{h.nguon_dia_chi || '—'}</td>
+                            <td style={{ padding:'6px 8px', color:'#374151' }}>{h.loai_hang || '—'}</td>
+                            <td style={{ padding:'6px 8px', textAlign:'center', fontWeight:700 }}>{h.so_luong_thung || 0}</td>
+                            <td style={{ padding:'6px 8px' }}>
+                              <span style={{ padding:'2px 8px', borderRadius:5, fontSize:11, fontWeight:700,
+                                background: h.trang_thai==='da_lay'?'#d1fae5':h.trang_thai==='huy'?'#fee2e2':'#ede9fe',
+                                color:      h.trang_thai==='da_lay'?'#059669':h.trang_thai==='huy'?'#dc2626':'#7c3aed' }}>
+                                {h.trang_thai==='da_lay'?'✅ Đã lấy':h.trang_thai==='huy'?'Huỷ':'⏳ Chờ lấy'}
+                              </span>
+                            </td>
+                            <td style={{ padding:'4px 8px' }}>
+                              {h.trang_thai !== 'da_lay' && (
+                                <button onClick={() => deleteHoi(h.id)}
+                                  style={{ padding:'2px 8px', background:'#fee2e2', color:'#dc2626', border:'none', borderRadius:5, cursor:'pointer', fontSize:11, fontWeight:700 }}>
+                                  Xóa
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Add form */}
+                <div style={{ background:'#f5f3ff', borderRadius:10, padding:14, border:'1px solid #ddd6fe' }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:'#7c3aed', marginBottom:12 }}>➕ Thêm điểm nhận hàng hồi</div>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:10 }}>
+                    {[
+                      { key:'nguon_ten',     label:'Tên điểm lấy *', placeholder:'VD: Công ty ABC' },
+                      { key:'nguon_dia_chi', label:'Địa chỉ',        placeholder:'VD: 123 Lê Lợi, Q1' },
+                      { key:'nguon_sdt',     label:'SĐT liên hệ',   placeholder:'VD: 0909123456' },
+                      { key:'loai_hang',     label:'Loại hàng',      placeholder:'VD: Giấy A4, hàng lỗi...' },
+                    ].map(f => (
+                      <div key={f.key}>
+                        <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:3 }}>{f.label}</div>
+                        <input
+                          value={hoiForm[f.key]}
+                          onChange={e => setHoiForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                          placeholder={f.placeholder}
+                          style={{ width:'100%', padding:'6px 9px', border:'1px solid #c4b5fd', borderRadius:6, fontSize:12, outline:'none', background:'white' }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:10 }}>
+                    <div>
+                      <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:3 }}>Số thùng</div>
+                      <input
+                        type="number" min="0"
+                        value={hoiForm.so_luong_thung}
+                        onChange={e => setHoiForm(prev => ({ ...prev, so_luong_thung: e.target.value }))}
+                        placeholder="0"
+                        style={{ width:'100%', padding:'6px 9px', border:'1px solid #c4b5fd', borderRadius:6, fontSize:12, outline:'none', background:'white' }}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize:11, fontWeight:700, color:'#374151', marginBottom:3 }}>Ghi chú</div>
+                      <input
+                        value={hoiForm.ghi_chu}
+                        onChange={e => setHoiForm(prev => ({ ...prev, ghi_chu: e.target.value }))}
+                        placeholder="VD: Hàng dễ vỡ, cẩn thận..."
+                        style={{ width:'100%', padding:'6px 9px', border:'1px solid #c4b5fd', borderRadius:6, fontSize:12, outline:'none', background:'white' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div style={{ padding:'12px 20px', borderTop:'1px solid #e5e7eb' }}>
+                {/* Nếu từ luồng In lệnh → bắt xác nhận */}
+                {hoiThenLenh && (() => {
+                  const hasItems = phieuHoiList.filter(h => h.lai_xe === hoiModal).length > 0;
+                  const canProceed = hasItems || hoiNoHoi;
+                  return (
+                    <div>
+                      {!hasItems && (
+                        <label style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12, padding:'10px 14px', background: hoiNoHoi?'#f0fdf4':'#fef9c3', border:('1px solid '+(hoiNoHoi?'#bbf7d0':'#fde68a')), borderRadius:8, cursor:'pointer', fontSize:13 }}>
+                          <input
+                            type="checkbox"
+                            checked={hoiNoHoi}
+                            onChange={e => setHoiNoHoi(e.target.checked)}
+                            style={{ width:18, height:18, accentColor:'#059669', cursor:'pointer' }}
+                          />
+                          <span style={{ fontWeight:700, color: hoiNoHoi?'#059669':'#92400e' }}>
+                            ✅ Xác nhận: chuyến này <u>không có</u> hàng hồi
+                          </span>
+                        </label>
+                      )}
+                      <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                        <button onClick={() => { setHoiModal(null); setHoiThenLenh(false); }} style={{ padding:'8px 16px', border:'1px solid #d1d5db', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>Huỷ</button>
+                        <button
+                          onClick={addHoi}
+                          disabled={hoiSaving || !hoiForm.nguon_ten.trim()}
+                          style={{ padding:'8px 16px', background: !hoiForm.nguon_ten.trim()?'#e5e7eb':'#7c3aed', color: !hoiForm.nguon_ten.trim()?'#9ca3af':'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: !hoiForm.nguon_ten.trim()?'default':'pointer', opacity: hoiSaving?0.7:1 }}>
+                          {hoiSaving ? '⏳...' : '➕ Thêm'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (!canProceed) { showToast('Thêm điểm lấy hoặc xác nhận "Không có hàng hồi" trước!', 'error'); return; }
+                            const driver = hoiModal;
+                            setHoiModal(null);
+                            setHoiThenLenh(false);
+                            setLenhModal(driver);
+                          }}
+                          style={{ padding:'8px 22px', background: canProceed?'#1e3a5f':'#9ca3af', color:'white', border:'none', borderRadius:8, fontWeight:800, fontSize:13, cursor: canProceed?'pointer':'default' }}>
+                          📋 Xác nhận → In lệnh
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Nếu mở standalone (không từ In lệnh) → bình thường */}
+                {!hoiThenLenh && (
+                  <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                    <button onClick={() => setHoiModal(null)} style={{ padding:'8px 16px', border:'1px solid #d1d5db', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>Đóng</button>
+                    <button
+                      onClick={addHoi}
+                      disabled={hoiSaving || !hoiForm.nguon_ten.trim()}
+                      style={{ padding:'8px 20px', background: !hoiForm.nguon_ten.trim()?'#9ca3af':'#7c3aed', color:'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: !hoiForm.nguon_ten.trim()?'default':'pointer', opacity: hoiSaving?0.7:1 }}>
+                      {hoiSaving ? '⏳ Đang lưu...' : '➕ Thêm điểm lấy'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {lenhModal && (() => {
+        const driverInfo = driverList.find(d => d.ten === lenhModal) || {};
+        const orders = phieuList.filter(p => {
+          const s = statusMap[p.row_key];
+          const lx = s ? s.lai_xe_phan_cong : p.lai_xe;
+          return lx === lenhModal;
+        });
+        const gn = orders.length > 0
+          ? (statusMap[orders[0].row_key]?.giao_nhan_phan_cong || orders[0].giao_nhan || '—')
+          : '—';
+        return (
+          <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.5)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+            onClick={() => setLenhModal(null)}>
+            <div style={{ background:'white', borderRadius:14, width:'100%', maxWidth:820, maxHeight:'90vh', overflow:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.3)' }}
+              onClick={e => e.stopPropagation()}>
+              {/* Header */}
+              <div style={{ background:'#1e3a5f', color:'white', padding:'16px 20px', borderRadius:'14px 14px 0 0', display:'flex', alignItems:'center', gap:10 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:800, fontSize:16 }}>📋 Lệnh điều xe — {lenhModal}</div>
+                  <div style={{ fontSize:12, opacity:.8, marginTop:2 }}>
+                    🚗 {driverInfo.bien_so || 'Chưa có biển số'}
+                    {' · '}👤 Phụ xe: {gn}
+                    {' · '}📅 {ngayTu === ngayDen ? ngayTu : ngayTu + ' → ' + ngayDen}
+                    {' · '}{orders.length} đơn
+                  </div>
+                </div>
+                <button onClick={() => setLenhModal(null)} style={{ background:'rgba(255,255,255,.15)', border:'none', color:'white', borderRadius:8, padding:'5px 12px', cursor:'pointer', fontSize:14 }}>✕ Đóng</button>
+              </div>
+
+              {/* Order list */}
+              <div style={{ padding:'12px 20px' }}>
+                {orders.length === 0
+                  ? <div style={{ textAlign:'center', padding:40, color:'#9ca3af' }}>Chưa có đơn nào được phân cho xe này</div>
+                  : (
+                  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                    <thead>
+                      <tr style={{ background:'#f3f4f6' }}>
+                        {['#','Số phiếu','Khách hàng','Địa chỉ','Hàng hóa','Trạng thái'].map(h => (
+                          <th key={h} style={{ padding:'7px 10px', textAlign:'left', fontWeight:700, color:'#374151', borderBottom:'2px solid #e5e7eb', whiteSpace:'nowrap' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orders.map((p, i) => {
+                        const tt = getTT(p);
+                        const ttInfo = TRANG_THAI[tt] || TRANG_THAI.cho_giao;
+                        return (
+                          <tr key={p.row_key} style={{ borderBottom:'1px solid #f3f4f6', background: i%2===0?'white':'#fafafa' }}>
+                            <td style={{ padding:'6px 10px', color:'#9ca3af' }}>{i+1}</td>
+                            <td style={{ padding:'6px 10px', fontWeight:600, color:'#1d4ed8' }}>{p.so_phieu}</td>
+                            <td style={{ padding:'6px 10px' }}>{p.ten_kh}</td>
+                            <td style={{ padding:'6px 10px', color:'#6b7280', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.dia_chi_giao}</td>
+                            <td style={{ padding:'6px 10px', color:'#374151' }}>{p.ghi_chu || (p.san_pham?.length > 0 ? p.san_pham.map(s=>s.ma_sp+'×'+s.so_luong).join(', ') : '—')}</td>
+                            <td style={{ padding:'6px 10px' }}>
+                              <span style={{ padding:'2px 8px', borderRadius:5, fontSize:11, fontWeight:700, background:ttInfo.bg, color:ttInfo.color }}>{ttInfo.label}</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div style={{ padding:'12px 20px', borderTop:'1px solid #e5e7eb', display:'flex', gap:8, justifyContent:'flex-end' }}>
+                <button onClick={() => setLenhModal(null)} style={{ padding:'8px 16px', border:'1px solid #d1d5db', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>Đóng</button>
+                <button
+                  onClick={() => printLenh(lenhModal)}
+                  disabled={orders.length === 0}
+                  style={{ padding:'8px 20px', background: orders.length === 0 ? '#9ca3af' : '#1e3a5f', color:'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: orders.length===0?'default':'pointer' }}>
+                  🖨️ In / Xuất PDF
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+    </div>
+  );
+}
+
+const btnStyle = { padding:'6px 12px', border:'1px solid #d1d5db', borderRadius:6, background:'white', cursor:'pointer', fontSize:15 };
