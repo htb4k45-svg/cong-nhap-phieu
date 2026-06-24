@@ -1165,6 +1165,8 @@ export default function DieuXePage() {
                                 <td style={{ padding:'9px 10px' }}>
                                   {p.ma_lenh && <div style={{ fontSize:11, fontWeight:700, color:'#7c3aed', marginBottom:1 }}>{p.ma_lenh}</div>}
                                   <div style={{ fontSize:11, color:'#6b7280', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:110 }} title={p.so_phieu}>{p.so_phieu||'—'}</div>
+                                  {p.dac_diem === 'xuat_gui'   && <span style={{ fontSize:10, fontWeight:700, color:'#92400e', background:'#fef3c7', padding:'1px 5px', borderRadius:3, marginTop:2, display:'inline-block' }}>🔄 Hàng gửi</span>}
+                                  {p.dac_diem === 'xuat_thieu' && <span style={{ fontSize:10, fontWeight:700, color:'#991b1b', background:'#fee2e2', padding:'1px 5px', borderRadius:3, marginTop:2, display:'inline-block' }}>⚠️ Hàng thiếu</span>}
                                 </td>
                                 <td style={{ padding:'9px 10px', whiteSpace:'nowrap' }}>
                                   <span style={{ fontSize:11, color: sortBy==='ngay_len_don' ? '#1d4ed8' : '#6b7280', fontWeight: sortBy==='ngay_len_don' ? 600 : 400 }}>
