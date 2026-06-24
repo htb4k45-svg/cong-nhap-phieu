@@ -34,7 +34,7 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const {
-      so_phieu_hoi, nguon_ten, nguon_dia_chi, nguon_sdt,
+      so_phieu_hoi, bo_phan, nguon_ten, nguon_dia_chi, nguon_sdt,
       loai_hang, so_luong_thung, so_kg, ghi_chu,
       kho_nhan, nguoi_nhan,
       lai_xe, ngay_lay,
@@ -49,6 +49,7 @@ export async function POST(request) {
       .from('phieu_hoi')
       .insert({
         so_phieu_hoi:   so_phieu_hoi || null,
+        bo_phan:        bo_phan || null,
         nguon_ten:      nguon_ten.trim(),
         nguon_dia_chi:  nguon_dia_chi || null,
         nguon_sdt:      nguon_sdt || null,

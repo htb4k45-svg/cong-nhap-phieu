@@ -6,6 +6,7 @@ import PhieuForm from '@/components/PhieuForm';
 // ── Thu hồi form ─────────────────────────────────────────────────────────────
 
 const emptyHoi = {
+  bo_phan: '',
   nguon_ten: '', nguon_dia_chi: '', nguon_sdt: '',
   loai_hang: '', so_luong_thung: '0', ghi_chu: '',
   kho_nhan: '', nguoi_nhan: '',
@@ -29,6 +30,7 @@ function PhieuHoiForm() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          bo_phan:        form.bo_phan || null,
           nguon_ten:      form.nguon_ten.trim(),
           nguon_dia_chi:  form.nguon_dia_chi || null,
           nguon_sdt:      form.nguon_sdt || null,
@@ -59,9 +61,33 @@ function PhieuHoiForm() {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      {/* 1. Thông tin điểm lấy */}
+      {/* 0. Bộ phận */}
       <div className="section-card">
-        <h2 className="section-title">1. Thông tin điểm lấy hàng</h2>
+        <h2 className="section-title">1. Kênh bán hàng</h2>
+        <div className="flex gap-2">
+          {['MT', 'GT', 'B2B'].map(bp => (
+            <button key={bp} type="button"
+              onClick={() => set('bo_phan', bp)}
+              style={{
+                padding:'8px 20px', borderRadius:8, border:'2px solid', cursor:'pointer',
+                fontSize:13, fontWeight:700, transition:'all .15s',
+                background: form.bo_phan === bp
+                  ? (bp==='MT'?'#7c3aed': bp==='GT'?'#0891b2':'#ea580c')
+                  : 'white',
+                borderColor: form.bo_phan === bp
+                  ? (bp==='MT'?'#7c3aed': bp==='GT'?'#0891b2':'#ea580c')
+                  : '#e5e7eb',
+                color: form.bo_phan === bp ? 'white' : '#6b7280',
+              }}>
+              {bp}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 2. Thông tin điểm lấy */}
+      <div className="section-card">
+        <h2 className="section-title">2. Thông tin điểm lấy hàng</h2>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
           <div style={{ gridColumn:'1/-1' }}>
             <label style={labelStyle}>Tên điểm lấy / Khách hàng trả hàng *</label>
@@ -82,9 +108,9 @@ function PhieuHoiForm() {
         </div>
       </div>
 
-      {/* 2. Thông tin hàng */}
+      {/* 3. Thông tin hàng */}
       <div className="section-card">
-        <h2 className="section-title">2. Thông tin hàng thu hồi</h2>
+        <h2 className="section-title">3. Thông tin hàng thu hồi</h2>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
           <div>
             <label style={labelStyle}>Loại hàng</label>
@@ -109,9 +135,9 @@ function PhieuHoiForm() {
         </div>
       </div>
 
-      {/* 3. Kho nhận */}
+      {/* 4. Kho nhận */}
       <div className="section-card">
-        <h2 className="section-title">3. Kho nhận tại Hồng Hà</h2>
+        <h2 className="section-title">4. Kho nhận tại Hồng Hà</h2>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
           <div>
             <label style={labelStyle}>Kho nhận</label>
