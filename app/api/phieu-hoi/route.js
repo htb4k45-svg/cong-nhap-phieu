@@ -8,11 +8,18 @@ export async function GET(request) {
     const date   = searchParams.get('date');
     const driver = searchParams.get('driver');
 
+    const pending = searchParams.get('pending');
+
     const supabase = createAdminClient();
     let q = supabase.from('phieu_hoi').select('*');
-    if (date)   q = q.eq('ngay_lay', date);
-    if (driver) q = q.eq('lai_xe', driver);
-    q = q.order('created_at', { ascending: true });
+    if (pending) {
+      // Tất cả phiếu chờ lấy chưa gán lái xe
+      q = q.eq('trang_thai', 'cho_lay').is('lai_xe', null);
+    } else {
+      if (date)   q = q.eq('ngay_lay', date);
+      if (driver) q = q.eq('lai_xe', driver);
+    }
+    q = q.order('created_at', { ascending: false });
 
     const { data, error } = await q;
     if (error) throw error;

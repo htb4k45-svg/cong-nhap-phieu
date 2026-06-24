@@ -218,6 +218,7 @@ function parseSheet(ws) {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function ImportPage() {
+  const [mode, setMode]           = useState('giao_di'); // 'giao_di' | 'thu_hoi'
   const [sheets, setSheets]       = useState([]);
   const [selected, setSelected]   = useState([]);
   const [preview, setPreview]     = useState([]);
@@ -225,6 +226,46 @@ export default function ImportPage() {
   const [result, setResult]       = useState(null);
   const [fileName, setFileName]   = useState('');
   const [fileFormat, setFileFormat] = useState(null); // 'MT' | 'B2B' | 'mixed'
+
+  // ── Thu hồi form state ────────────────────────────────────────────────────
+  const emptyHoi = { nguon_ten:'', nguon_dia_chi:'', nguon_sdt:'', loai_hang:'', so_luong_thung:'0', ghi_chu:'', kho_nhan:'', nguoi_nhan:'', ngay_lay: new Date().toISOString().split('T')[0] };
+  const [hoiForm, setHoiForm]     = useState(emptyHoi);
+  const [hoiSaving, setHoiSaving] = useState(false);
+  const [hoiResult, setHoiResult] = useState(null); // { ok, id } | { error }
+
+  const handleHoiSubmit = async () => {
+    if (!hoiForm.nguon_ten.trim()) return;
+    setHoiSaving(true);
+    setHoiResult(null);
+    try {
+      const res = await fetch('/api/phieu-hoi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nguon_ten:      hoiForm.nguon_ten.trim(),
+          nguon_dia_chi:  hoiForm.nguon_dia_chi || null,
+          nguon_sdt:      hoiForm.nguon_sdt || null,
+          loai_hang:      hoiForm.loai_hang || null,
+          so_luong_thung: parseInt(hoiForm.so_luong_thung) || 0,
+          ghi_chu:        hoiForm.ghi_chu || null,
+          kho_nhan:       hoiForm.kho_nhan || null,
+          nguoi_nhan:     hoiForm.nguoi_nhan || null,
+          ngay_lay:       hoiForm.ngay_lay,
+        }),
+      });
+      const data = await res.json();
+      if (data.phieu) {
+        setHoiResult({ ok: true, id: data.phieu.id });
+        setHoiForm(emptyHoi);
+      } else {
+        setHoiResult({ error: data.error || 'Lỗi không rõ' });
+      }
+    } catch (e) {
+      setHoiResult({ error: e.message });
+    } finally {
+      setHoiSaving(false);
+    }
+  };
 
   const handleFile = (e) => {
     const file = e.target.files[0];
@@ -291,7 +332,19 @@ export default function ImportPage() {
       <div className="flex items-center gap-3 mb-6">
         <Link href="/" className="text-sm text-blue-600 hover:underline">← Về form nhập phiếu</Link>
         <span className="text-gray-300">|</span>
-        <h2 className="text-lg font-bold text-gray-900">Import Excel (B2B / Thị Trường)</h2>
+        <h2 className="text-lg font-bold text-gray-900">Nhập đơn hàng</h2>
+
+        {/* Mode toggle */}
+        <div style={{ display:'flex', background:'#f3f4f6', borderRadius:8, padding:3, gap:2, marginLeft:8 }}>
+          {[['giao_di','🚚 Giao đi'],['thu_hoi','📥 Thu hồi']].map(([m, label]) => (
+            <button key={m} onClick={() => { setMode(m); setResult(null); setHoiResult(null); }}
+              style={{ padding:'5px 14px', borderRadius:6, border:'none', cursor:'pointer', fontSize:13, fontWeight:600,
+                background: mode===m ? (m==='thu_hoi'?'#7c3aed':'#1d4ed8') : 'transparent',
+                color: mode===m ? 'white' : '#6b7280', transition:'all .15s' }}>
+              {label}
+            </button>
+          ))}
+        </div>
         {fileFormat && (
           <span className="ml-2 text-xs px-2 py-1 rounded font-medium"
             style={{background: fileFormat==='MT'?'#dbeafe': fileFormat==='B2B'?'#dcfce7':'#fef9c3',
@@ -300,6 +353,74 @@ export default function ImportPage() {
           </span>
         )}
       </div>
+
+      {/* ── THU HỒI FORM ─────────────────────────────────────────── */}
+      {mode === 'thu_hoi' && (
+        <div style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:12, padding:24, marginBottom:20 }}>
+          <div style={{ fontSize:15, fontWeight:700, color:'#7c3aed', marginBottom:16 }}>📥 Tạo phiếu thu hồi hàng</div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
+            {[
+              { key:'nguon_ten',     label:'Tên điểm lấy *',    placeholder:'Công ty / Khách trả hàng' },
+              { key:'nguon_dia_chi', label:'Địa chỉ điểm lấy',  placeholder:'Số nhà, đường, quận...' },
+              { key:'nguon_sdt',     label:'SĐT liên hệ',       placeholder:'0909...' },
+              { key:'loai_hang',     label:'Loại hàng',         placeholder:'Giấy A4, hàng lỗi, hàng thừa...' },
+              { key:'kho_nhan',      label:'Kho nhận tại HH',   placeholder:'Kho Miền Nam, Kho HN...' },
+              { key:'nguoi_nhan',    label:'Người nhận tại HH', placeholder:'Nguyễn Văn A...' },
+            ].map(f => (
+              <div key={f.key}>
+                <div style={{ fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>{f.label}</div>
+                <input value={hoiForm[f.key]}
+                  onChange={e => setHoiForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                  placeholder={f.placeholder}
+                  style={{ width:'100%', padding:'8px 10px', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, outline:'none', boxSizing:'border-box' }}
+                />
+              </div>
+            ))}
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'120px 100px 1fr', gap:12, marginBottom:16 }}>
+            <div>
+              <div style={{ fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Ngày lấy *</div>
+              <input type="date" value={hoiForm.ngay_lay}
+                onChange={e => setHoiForm(prev => ({ ...prev, ngay_lay: e.target.value }))}
+                style={{ width:'100%', padding:'8px 10px', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, outline:'none' }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Số thùng</div>
+              <input type="number" min="0" value={hoiForm.so_luong_thung}
+                onChange={e => setHoiForm(prev => ({ ...prev, so_luong_thung: e.target.value }))}
+                style={{ width:'100%', padding:'8px 10px', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, outline:'none' }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Ghi chú</div>
+              <input value={hoiForm.ghi_chu}
+                onChange={e => setHoiForm(prev => ({ ...prev, ghi_chu: e.target.value }))}
+                placeholder="Hàng dễ vỡ, cẩn thận..."
+                style={{ width:'100%', padding:'8px 10px', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, outline:'none' }}
+              />
+            </div>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <button onClick={handleHoiSubmit} disabled={hoiSaving || !hoiForm.nguon_ten.trim() || !hoiForm.ngay_lay}
+              style={{ padding:'9px 24px', background: (!hoiForm.nguon_ten.trim()||!hoiForm.ngay_lay) ? '#e5e7eb' : '#7c3aed',
+                color: (!hoiForm.nguon_ten.trim()||!hoiForm.ngay_lay) ? '#9ca3af' : 'white',
+                border:'none', borderRadius:8, fontWeight:700, fontSize:14, cursor: (!hoiForm.nguon_ten.trim()||!hoiForm.ngay_lay)?'default':'pointer',
+                opacity: hoiSaving ? 0.6 : 1 }}>
+              {hoiSaving ? '⏳ Đang lưu...' : '💾 Lưu phiếu thu hồi'}
+            </button>
+            {hoiResult && hoiResult.ok && (
+              <span style={{ color:'#059669', fontWeight:600, fontSize:13 }}>✅ Đã lưu thành công! Phiếu sẽ xuất hiện trong danh sách hàng hồi.</span>
+            )}
+            {hoiResult && hoiResult.error && (
+              <span style={{ color:'#dc2626', fontSize:13 }}>❌ {hoiResult.error}</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── GIAO ĐI (Excel import) ────────────────────────────── */}
+      {mode === 'giao_di' && <>
 
       {/* Upload */}
       <div className="section-card mb-6">
@@ -424,6 +545,7 @@ export default function ImportPage() {
           )}
         </div>
       )}
+      </> /* end giao_di */}
     </div>
   );
 }

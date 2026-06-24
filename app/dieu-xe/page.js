@@ -134,6 +134,10 @@ export default function DieuXePage() {
   const [hoiSaving, setHoiSaving]         = useState(false);
   const [hoiThenLenh, setHoiThenLenh]     = useState(false);  // true = opened from "In lệnh" (mandatory flow)
   const [hoiNoHoi, setHoiNoHoi]           = useState(false);  // checkbox "xác nhận không có hàng hồi"
+  const [hoiTab, setHoiTab]               = useState('them_moi'); // 'them_moi' | 'chon_danh_sach'
+  const [pendingHoiList, setPendingHoiList] = useState([]);    // phiếu hồi chưa gán lái xe
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [selectedPending, setSelectedPending] = useState(new Set()); // ids được tick
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -661,6 +665,39 @@ export default function DieuXePage() {
     }
   };
 
+  const openHoiModal = useCallback(function(driverName, thenLenh) {
+    setHoiModal(driverName);
+    setHoiThenLenh(!!thenLenh);
+    setHoiNoHoi(false);
+    setHoiTab('them_moi');
+    setSelectedPending(new Set());
+    // Fetch pending phieu_hoi (unassigned)
+    setPendingLoading(true);
+    fetch('/api/phieu-hoi?pending=1')
+      .then(r => r.json())
+      .then(d => setPendingHoiList(d.phieu_hoi || []))
+      .catch(() => setPendingHoiList([]))
+      .finally(() => setPendingLoading(false));
+  }, []);
+
+  const assignPendingToDriver = useCallback(async function(driverName) {
+    if (selectedPending.size === 0) return;
+    const ids = [...selectedPending];
+    await Promise.all(ids.map(id =>
+      fetch('/api/phieu-hoi', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, lai_xe: driverName, ngay_lay: ngayTu }),
+      })
+    ));
+    // Cập nhật local state
+    const assigned = pendingHoiList.filter(h => ids.includes(h.id)).map(h => ({ ...h, lai_xe: driverName, ngay_lay: ngayTu }));
+    setPhieuHoiList(prev => [...prev, ...assigned]);
+    setPendingHoiList(prev => prev.filter(h => !ids.includes(h.id)));
+    setSelectedPending(new Set());
+    showToast(`✅ Đã gán ${ids.length} phiếu hồi cho ${driverName}`, 'ok');
+  }, [selectedPending, pendingHoiList, ngayTu, showToast]);
+
   const toggleSort = useCallback(function(col) {
     if (sortBy === col) setSortDir(function(d) { return d === 'desc' ? 'asc' : 'desc'; });
     else { setSortBy(col); setSortDir('desc'); }
@@ -960,7 +997,7 @@ export default function DieuXePage() {
                             {grp.showLoad && d.total > 0 && (
                               <div style={{ display:'flex', gap:4, marginTop:6 }}>
                                 <button
-                                  onClick={e => { e.stopPropagation(); setHoiThenLenh(true); setHoiNoHoi(false); setHoiModal(name); }}
+                                  onClick={e => { e.stopPropagation(); openHoiModal(name, true); }}
                                   style={{ flex:1, padding:'3px 0', fontSize:11, fontWeight:700,
                                     background:'#1e3a5f', color:'white', border:'none', borderRadius:5, cursor:'pointer' }}>
                                   📋 In lệnh
@@ -978,7 +1015,7 @@ export default function DieuXePage() {
                               return (
                                 <div style={{ marginTop:4 }}>
                                   <button
-                                    onClick={e => { e.stopPropagation(); setHoiModal(name); }}
+                                    onClick={e => { e.stopPropagation(); openHoiModal(name, false); }}
                                     style={{ width:'100%', padding:'3px 0', fontSize:11, fontWeight:700,
                                       background: hoiCount > 0 ? '#7c3aed' : '#e5e7eb',
                                       color: hoiCount > 0 ? 'white' : '#9ca3af',
@@ -1322,7 +1359,7 @@ export default function DieuXePage() {
             </div>
             <div style={{ flex:1 }} />
             <button
-              onClick={() => { setHoiThenLenh(true); setHoiNoHoi(false); setHoiModal(activeDriver); }}
+              onClick={() => openHoiModal(activeDriver, true)}
               disabled={cartOrders.length === 0}
               style={{ padding:'8px 18px', background: cartOrders.length === 0 ? '#4b6a8a' : '#f59e0b', color: cartOrders.length === 0 ? '#9ca3af' : '#1e3a5f', border:'none', borderRadius:8, fontWeight:800, fontSize:13, cursor: cartOrders.length===0 ? 'default' : 'pointer' }}>
               📋 Xem giỏ & In lệnh xe
@@ -1680,6 +1717,78 @@ export default function DieuXePage() {
               </div>
 
               <div style={{ padding:'16px 20px' }}>
+                {/* Tab bar */}
+                <div style={{ display:'flex', gap:2, marginBottom:16, background:'#f3f4f6', borderRadius:8, padding:3 }}>
+                  {[['them_moi','➕ Thêm mới'],['chon_danh_sach',`📋 Chọn từ danh sách${pendingHoiList.length > 0 ? ` (${pendingHoiList.length})` : ''}`]].map(([t, label]) => (
+                    <button key={t} onClick={() => setHoiTab(t)}
+                      style={{ flex:1, padding:'6px 10px', borderRadius:6, border:'none', cursor:'pointer', fontSize:12, fontWeight:600,
+                        background: hoiTab===t ? '#7c3aed' : 'transparent',
+                        color: hoiTab===t ? 'white' : '#6b7280' }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Tab: Chọn từ danh sách */}
+                {hoiTab === 'chon_danh_sach' && (
+                  <div>
+                    {pendingLoading ? (
+                      <div style={{ textAlign:'center', padding:30, color:'#9ca3af' }}>⏳ Đang tải...</div>
+                    ) : pendingHoiList.length === 0 ? (
+                      <div style={{ textAlign:'center', padding:30, color:'#9ca3af' }}>
+                        <div style={{ fontSize:28, marginBottom:8 }}>📭</div>
+                        <div>Không có phiếu hồi nào đang chờ gán lái xe</div>
+                        <div style={{ fontSize:12, marginTop:4 }}>Nhập từ tab "Thêm mới" hoặc từ trang /import</div>
+                      </div>
+                    ) : (
+                      <div>
+                        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12, marginBottom:12 }}>
+                          <thead>
+                            <tr style={{ background:'#f3e8ff' }}>
+                              <th style={{ padding:'6px 8px', width:32 }}></th>
+                              {['Điểm lấy','Địa chỉ','Loại hàng','Thùng','Ngày lấy','Kho nhận'].map(h => (
+                                <th key={h} style={{ padding:'6px 8px', textAlign:'left', fontWeight:700, color:'#7c3aed', borderBottom:'2px solid #d8b4fe', whiteSpace:'nowrap' }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pendingHoiList.map((h, i) => {
+                              const checked = selectedPending.has(h.id);
+                              return (
+                                <tr key={h.id} onClick={() => setSelectedPending(prev => { const s = new Set(prev); s.has(h.id) ? s.delete(h.id) : s.add(h.id); return s; })}
+                                  style={{ borderBottom:'1px solid #f3f4f6', background: checked ? '#f5f3ff' : (i%2===0?'white':'#fafafa'), cursor:'pointer' }}>
+                                  <td style={{ padding:'6px 8px', textAlign:'center' }}>
+                                    <input type="checkbox" checked={checked} readOnly style={{ width:15, height:15, accentColor:'#7c3aed' }} />
+                                  </td>
+                                  <td style={{ padding:'6px 8px', fontWeight:600, color: checked?'#7c3aed':'#374151' }}>{h.nguon_ten}</td>
+                                  <td style={{ padding:'6px 8px', color:'#6b7280', maxWidth:130, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{h.nguon_dia_chi || '—'}</td>
+                                  <td style={{ padding:'6px 8px', color:'#374151' }}>{h.loai_hang || '—'}</td>
+                                  <td style={{ padding:'6px 8px', textAlign:'center', fontWeight:700 }}>{h.so_luong_thung || 0}</td>
+                                  <td style={{ padding:'6px 8px', color:'#6b7280' }}>{h.ngay_lay || '—'}</td>
+                                  <td style={{ padding:'6px 8px', color:'#374151', fontSize:11 }}>{h.kho_nhan || '—'}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+                          <button
+                            onClick={() => assignPendingToDriver(hoiModal)}
+                            disabled={selectedPending.size === 0 || hoiSaving}
+                            style={{ padding:'8px 20px', background: selectedPending.size===0?'#e5e7eb':'#7c3aed', color: selectedPending.size===0?'#9ca3af':'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: selectedPending.size===0?'default':'pointer' }}>
+                            ✅ Gán {selectedPending.size > 0 ? selectedPending.size + ' phiếu' : ''} cho {hoiModal}
+                          </button>
+                          {selectedPending.size > 0 && (
+                            <button onClick={() => setSelectedPending(new Set())} style={{ fontSize:12, color:'#6b7280', background:'none', border:'none', cursor:'pointer' }}>Bỏ chọn tất cả</button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Tab: Thêm mới — existing items + form */}
+                {hoiTab === 'them_moi' && <>
                 {/* Existing items */}
                 {hoiItems.length > 0 && (
                   <div style={{ marginBottom:18 }}>
@@ -1784,6 +1893,8 @@ export default function DieuXePage() {
                     </div>
                   </div>
                 </div>
+              </div>
+                </> /* end them_moi tab */}
               </div>
 
               {/* Footer */}
