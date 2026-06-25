@@ -180,7 +180,7 @@ export default function DieuXePage() {
   const [suggLoading, setSuggLoading] = useState(false);
   const [suggModal, setSuggModal]     = useState(false);
   const [suggApplying, setSuggApplying] = useState(false);
-  const [soXe, setSoXe]               = useState(0);         // 0 = tự động (dùng tất cả lái xe)
+  const [selectedDriverIds, setSelectedDriverIds] = useState(null); // null = chưa init; Set<id> khi modal mở
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -265,7 +265,6 @@ export default function DieuXePage() {
   const callSuggestion = useCallback(async () => {
     if (!phieuList.length || !driverList.length) return;
     setSuggLoading(true);
-    setSuggModal(true);
     setSuggResult(null);
     try {
       // Pre-compute khu_vuc bằng ward-matcher của UI (đồng bộ với bảng chính)
@@ -274,10 +273,14 @@ export default function DieuXePage() {
         ...p,
         khu_vuc: extractKhuVuc(p.dia_chi_giao, matcher).name,
       }));
+      // Chỉ gửi xe được chọn; nếu chưa init thì dùng tất cả
+      const activeDrivers = selectedDriverIds
+        ? driverList.filter(d => selectedDriverIds.has(d.id))
+        : driverList;
       const res = await fetch('/api/route-suggestion', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phieu: phieuWithKhu, drivers: driverList, statusMap, soXe }),
+        body: JSON.stringify({ phieu: phieuWithKhu, drivers: activeDrivers, statusMap }),
       });
       const data = await res.json();
       setSuggResult(data);
@@ -286,7 +289,20 @@ export default function DieuXePage() {
     } finally {
       setSuggLoading(false);
     }
-  }, [phieuList, driverList, statusMap, soXe]);
+  }, [phieuList, driverList, statusMap, selectedDriverIds]);
+
+  // Mở modal gợi ý: khởi tạo selectedDriverIds = tất cả lái xe đang hoạt động
+  const openSuggModal = useCallback(() => {
+    if (!driverList.length) return;
+    const ids = new Set(
+      driverList
+        .filter(d => d.vai_tro === 'lai_xe' || d.vai_tro === 'ca_hai')
+        .map(d => d.id)
+    );
+    setSelectedDriverIds(ids);
+    setSuggResult(null);
+    setSuggModal(true);
+  }, [driverList]);
 
   const applySuggestion = useCallback(async () => {
     if (!suggResult || !suggResult.assignments) return;
@@ -1043,20 +1059,10 @@ export default function DieuXePage() {
             style={{ padding:'5px 12px', border:'1px solid #bfdbfe', borderRadius:6, background:'#eff6ff', color:'#1d4ed8', cursor:'pointer', fontSize:13 }}>
             {loading ? '…' : '🔄 Tải lại'}
           </button>
-          <div style={{ display:'flex', alignItems:'center', gap:0, border:'1px solid #a7f3d0', borderRadius:6, background:'#ecfdf5', overflow:'hidden' }}>
-            <button onClick={callSuggestion} disabled={suggLoading || loading || !phieuList.length}
-              style={{ padding:'5px 12px', border:'none', background:'transparent', color:'#065f46', cursor:'pointer', fontSize:13, fontWeight:600 }}>
-              {suggLoading ? '⏳ Đang tính…' : '🗺️ Gợi ý phân xe'}
-            </button>
-            <div style={{ width:1, background:'#a7f3d0', alignSelf:'stretch' }} />
-            <div style={{ display:'flex', alignItems:'center', gap:2, padding:'0 6px' }}>
-              <button onClick={() => setSoXe(function(v){ return Math.max(0, v - 1); })}
-                style={{ background:'none', border:'none', color:'#065f46', cursor:'pointer', fontSize:13, padding:'0 1px' }}>−</button>
-              <span style={{ fontSize:11, color:'#065f46', fontWeight:600, minWidth:20, textAlign:'center' }} title="Số xe muốn dùng (0=tự động)">{soXe === 0 ? 'Auto' : soXe + 'xe'}</span>
-              <button onClick={() => setSoXe(function(v){ return v + 1; })}
-                style={{ background:'none', border:'none', color:'#065f46', cursor:'pointer', fontSize:13, padding:'0 1px' }}>+</button>
-            </div>
-          </div>
+          <button onClick={openSuggModal} disabled={loading || !phieuList.length}
+            style={{ padding:'5px 12px', border:'1px solid #a7f3d0', borderRadius:6, background:'#ecfdf5', color:'#065f46', cursor:'pointer', fontSize:13, fontWeight:600 }}>
+            🗺️ Gợi ý phân xe
+          </button>
         </div>
       </div>
 
@@ -2239,23 +2245,58 @@ export default function DieuXePage() {
                 <div style={{ fontWeight:800, fontSize:16 }}>🗺️ Gợi ý phân xe tự động</div>
                 <div style={{ fontSize:11, opacity:.8, marginTop:2 }}>Nhóm đơn theo khu vực · Phân theo sức tải lái xe</div>
               </div>
-              {/* Số xe muốn dùng */}
-              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2, background:'rgba(255,255,255,.15)', borderRadius:8, padding:'5px 10px', marginRight:4 }}>
-                <div style={{ fontSize:10, opacity:.85, whiteSpace:'nowrap' }}>Số xe</div>
-                <div style={{ display:'flex', alignItems:'center', gap:4 }}>
-                  <button onClick={() => setSoXe(function(v){ return Math.max(0, v - 1); })}
-                    style={{ background:'rgba(255,255,255,.25)', border:'none', color:'white', borderRadius:4, width:22, height:22, cursor:'pointer', fontSize:14, lineHeight:1 }}>−</button>
-                  <span style={{ fontSize:14, fontWeight:700, minWidth:24, textAlign:'center' }}>{soXe === 0 ? 'Tự động' : soXe}</span>
-                  <button onClick={() => setSoXe(function(v){ return v + 1; })}
-                    style={{ background:'rgba(255,255,255,.25)', border:'none', color:'white', borderRadius:4, width:22, height:22, cursor:'pointer', fontSize:14, lineHeight:1 }}>+</button>
-                </div>
-              </div>
               <button onClick={() => setSuggModal(false)}
                 style={{ background:'rgba(255,255,255,.2)', border:'none', color:'white', borderRadius:8, padding:'5px 12px', cursor:'pointer', fontSize:14 }}>✕</button>
             </div>
 
             {/* Body */}
             <div style={{ padding:'16px 20px', maxHeight:'70vh', overflowY:'auto' }}>
+
+              {/* ── Chọn xe tham gia hôm nay ── */}
+              {selectedDriverIds !== null && (
+                <div style={{ marginBottom:16, border:'1px solid #d1fae5', borderRadius:10, padding:'12px 14px', background:'#f0fdf4' }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                    <div style={{ fontWeight:700, fontSize:13, color:'#065f46' }}>🚗 Xe tham gia hôm nay</div>
+                    <div style={{ display:'flex', gap:10 }}>
+                      <button onClick={() => setSelectedDriverIds(new Set(
+                        driverList.filter(d => d.vai_tro === 'lai_xe' || d.vai_tro === 'ca_hai').map(d => d.id)
+                      ))} style={{ fontSize:11, color:'#059669', background:'none', border:'none', cursor:'pointer', padding:0 }}>Chọn tất cả</button>
+                      <button onClick={() => setSelectedDriverIds(new Set())}
+                        style={{ fontSize:11, color:'#9ca3af', background:'none', border:'none', cursor:'pointer', padding:0 }}>Bỏ chọn</button>
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:12 }}>
+                    {driverList.filter(d => d.vai_tro === 'lai_xe' || d.vai_tro === 'ca_hai').map(d => {
+                      const checked = selectedDriverIds.has(d.id);
+                      return (
+                        <label key={d.id} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 10px', borderRadius:8,
+                          border:`1px solid ${checked ? '#a7f3d0' : '#e5e7eb'}`,
+                          background: checked ? '#ecfdf5' : 'white', cursor:'pointer', fontSize:13, userSelect:'none' }}>
+                          <input type="checkbox" checked={checked} onChange={() => {
+                            setSelectedDriverIds(prev => {
+                              const next = new Set(prev);
+                              if (next.has(d.id)) next.delete(d.id); else next.add(d.id);
+                              return next;
+                            });
+                          }} style={{ accentColor:'#059669' }} />
+                          <span style={{ fontWeight:600, color: checked ? '#065f46' : '#9ca3af' }}>{d.ten}</span>
+                          {d.bien_so && <span style={{ fontSize:11, color:'#6b7280' }}>· {d.bien_so}</span>}
+                          {d.suc_tai_thung > 0 && <span style={{ fontSize:11, color:'#6b7280' }}>{d.suc_tai_thung}T</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <button onClick={callSuggestion}
+                    disabled={suggLoading || selectedDriverIds.size === 0 || !phieuList.length}
+                    style={{ padding:'7px 20px', border:'none', borderRadius:8,
+                      background: (selectedDriverIds.size === 0 || suggLoading) ? '#d1d5db' : '#059669',
+                      color:'white', cursor: selectedDriverIds.size === 0 ? 'not-allowed' : 'pointer',
+                      fontSize:13, fontWeight:700 }}>
+                    {suggLoading ? '⏳ Đang tính…' : `📊 Tính toán phân xe (${selectedDriverIds.size} xe)`}
+                  </button>
+                </div>
+              )}
+
               {suggLoading && (
                 <div style={{ textAlign:'center', padding:'40px', color:'#6b7280' }}>⏳ Đang tính toán phân xe…</div>
               )}
