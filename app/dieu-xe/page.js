@@ -156,7 +156,8 @@ export default function DieuXePage() {
   const [groupByArea, setGroupByArea] = useState(true);
   const [lastFetch, setLastFetch]     = useState(null);
   const [huyenList, setHuyenList]     = useState([]);
-  const huyenMatcherRef = useRef(null); // ref để callSuggestion đọc được mà không cần dep
+  const huyenMatcherRef    = useRef(null); // ref để callSuggestion đọc được mà không cần dep
+  const ordersForSuggRef   = useRef([]);   // tương tự — tránh temporal dead zone với ordersForSugg
   const [driverList, setDriverList]   = useState([]);
   const [assigningKey, setAssigningKey] = useState(null);
   const [toast, setToast]               = useState(null);
@@ -181,6 +182,8 @@ export default function DieuXePage() {
   const [suggModal, setSuggModal]     = useState(false);
   const [suggApplying, setSuggApplying] = useState(false);
   const [selectedDriverIds, setSelectedDriverIds] = useState(null); // null = chưa init; Set<id> khi modal mở
+  const [selectedForSugg, setSelectedForSugg]     = useState(new Set()); // row_keys tick thủ công ưu tiên filter
+  const [suggFilters, setSuggFilters]             = useState({ ngayGiao: '', boPhan: new Set(['MT','GT','B2B']) });
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -256,6 +259,21 @@ export default function DieuXePage() {
     return s ? s.trang_thai : 'cho_giao';
   }, [statusMap]);
 
+  // getLx / getGn: dùng ?? để '' (sentinel "đã hủy") override p.lai_xe từ sheet
+  // - null/undefined trong dispatch_status → fallback về sheet
+  // - '' trong dispatch_status → "đã hủy rõ ràng" → hiển thị trống
+  const getLx = useCallback((p) => {
+    const s = statusMap[p.row_key];
+    if (!s) return p.lai_xe || null;
+    return s.lai_xe_phan_cong !== undefined ? (s.lai_xe_phan_cong ?? p.lai_xe) : (p.lai_xe || null);
+  }, [statusMap]);
+
+  const getGn = useCallback((p) => {
+    const s = statusMap[p.row_key];
+    if (!s) return p.giao_nhan || null;
+    return s.giao_nhan_phan_cong !== undefined ? (s.giao_nhan_phan_cong ?? p.giao_nhan) : (p.giao_nhan || null);
+  }, [statusMap]);
+
   const showToast = useCallback((msg, type) => {
     setToast({ msg, type: type || 'warn' });
     setTimeout(function() { setToast(null); }, 4000);
@@ -263,13 +281,14 @@ export default function DieuXePage() {
 
   // ── Gợi ý phân xe tự động ──────────────────────────────────────────────────
   const callSuggestion = useCallback(async () => {
-    if (!phieuList.length || !driverList.length) return;
+    const orders = ordersForSuggRef.current;
+    if (!orders.length || !driverList.length) return;
     setSuggLoading(true);
     setSuggResult(null);
     try {
       // Pre-compute khu_vuc bằng ward-matcher của UI (đồng bộ với bảng chính)
       const matcher = huyenMatcherRef.current;
-      const phieuWithKhu = phieuList.map(p => ({
+      const phieuWithKhu = orders.map(p => ({
         ...p,
         khu_vuc: extractKhuVuc(p.dia_chi_giao, matcher).name,
       }));
@@ -289,7 +308,7 @@ export default function DieuXePage() {
     } finally {
       setSuggLoading(false);
     }
-  }, [phieuList, driverList, statusMap, selectedDriverIds]);
+  }, [driverList, statusMap, selectedDriverIds]);
 
   // Mở modal gợi ý: khởi tạo selectedDriverIds = tất cả lái xe đang hoạt động
   const openSuggModal = useCallback(() => {
@@ -405,11 +424,7 @@ export default function DieuXePage() {
 
   const printLenh = (driverName) => {
     const driverInfo = driverList.find(d => d.ten === driverName) || {};
-    const orders = phieuList.filter(p => {
-      const s = statusMap[p.row_key];
-      const lx = s ? s.lai_xe_phan_cong : p.lai_xe;
-      return lx === driverName;
-    });
+    const orders = phieuList.filter(p => getLx(p) === driverName);
     const hoiItems = phieuHoiList.filter(h => h.lai_xe === driverName);
     const gn = orders.length > 0
       ? (statusMap[orders[0].row_key]?.giao_nhan_phan_cong || orders[0].giao_nhan || '—')
@@ -680,11 +695,7 @@ export default function DieuXePage() {
   };
 
   const openChotModal = (driverName) => {
-    const orders = phieuList.filter(p => {
-      const s = statusMap[p.row_key];
-      const lx = s ? (s.lai_xe_phan_cong || p.lai_xe) : p.lai_xe;
-      return lx === driverName;
-    });
+    const orders = phieuList.filter(p => getLx(p) === driverName);
     // Prefill km nếu đã có bản ghi hôm nay
     fetch(`/api/delivery-runs?date=${ngayTu}&driver=${encodeURIComponent(driverName)}`)
       .then(r => r.json())
@@ -705,11 +716,7 @@ export default function DieuXePage() {
 
   const submitChot = async () => {
     if (!chotModal) return;
-    const orders = phieuList.filter(p => {
-      const s = statusMap[p.row_key];
-      const lx = s ? (s.lai_xe_phan_cong || p.lai_xe) : p.lai_xe;
-      return lx === chotModal;
-    });
+    const orders = phieuList.filter(p => getLx(p) === chotModal);
 
     // Kiểm tra hàng hồi chưa xác nhận — bắt buộc xử lý trước khi chốt
     const uncheckedHoi = phieuHoiList.filter(h =>
@@ -737,8 +744,8 @@ export default function DieuXePage() {
             bo_phan:   p.bo_phan,
             ngay_giao: p.ngay_can_giao || ngayTu,
             trang_thai: isHoan ? 'huy' : 'da_giao',
-            lai_xe_phan_cong:    cur.lai_xe_phan_cong    || p.lai_xe    || null,
-            giao_nhan_phan_cong: cur.giao_nhan_phan_cong || p.giao_nhan || null,
+            lai_xe_phan_cong:    getLx(p) || null,
+            giao_nhan_phan_cong: getGn(p) || null,
             ghi_chu_giao: ghiChuDon || null,
           }),
         });
@@ -850,6 +857,74 @@ export default function DieuXePage() {
     }
   };
 
+  // ── Hủy toàn bộ phân công lái xe ─────────────────────────────────────────────
+  const unassignDriver = useCallback(async (driverName) => {
+    const orders = phieuList.filter(p => getLx(p) === driverName);
+    if (orders.length === 0) { showToast('Không có đơn nào để hủy', 'warn'); return; }
+    if (!window.confirm(`Hủy phân công ${orders.length} đơn của xe ${driverName}?\n\nTất cả sẽ về trạng thái Chờ giao — chưa có lái xe.`)) return;
+    try {
+      await Promise.all(orders.map(p =>
+        fetch('/api/dispatch-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            row_key:             p.row_key,
+            bo_phan:             p.bo_phan,
+            ngay_giao:           p.ngay_can_giao || ngayTu,
+            trang_thai:          'cho_giao',
+            lai_xe_phan_cong:    '', // '' = sentinel "đã hủy rõ ràng", override p.lai_xe từ sheet
+          }),
+        })
+      ));
+      setStatusMap(prev => {
+        const next = { ...prev };
+        orders.forEach(p => {
+          next[p.row_key] = { ...(next[p.row_key] || {}), lai_xe_phan_cong: '', trang_thai: 'cho_giao' };
+        });
+        return next;
+      });
+      showToast(`✅ Đã hủy phân công ${orders.length} đơn của xe ${driverName}`, 'ok');
+    } catch (e) {
+      showToast('Lỗi hủy phân công: ' + e.message, 'error');
+    }
+  }, [phieuList, statusMap, ngayTu, showToast]);
+
+  // ── Gắn phụ xe hàng loạt cho tất cả đơn của 1 lái xe ─────────────────────────
+  const assignGiaoNhanForDriver = useCallback(async (driverName, giaoNhanName) => {
+    const orders = phieuList.filter(p => {
+      const s = statusMap[p.row_key];
+      return getLx(p) === driverName;
+    });
+    if (orders.length === 0) return;
+    try {
+      await Promise.all(orders.map(p =>
+        fetch('/api/dispatch-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            row_key:                p.row_key,
+            bo_phan:                p.bo_phan,
+            ngay_giao:              p.ngay_can_giao || ngayTu,
+            trang_thai:             statusMap[p.row_key]?.trang_thai || 'cho_giao',
+            giao_nhan_phan_cong:    giaoNhanName || null,
+          }),
+        })
+      ));
+      setStatusMap(prev => {
+        const next = { ...prev };
+        orders.forEach(p => {
+          next[p.row_key] = { ...(next[p.row_key] || {}), giao_nhan_phan_cong: giaoNhanName || null };
+        });
+        return next;
+      });
+      showToast(giaoNhanName
+        ? `✅ Gắn phụ xe ${giaoNhanName} cho ${orders.length} đơn của ${driverName}`
+        : `✅ Đã bỏ phụ xe khỏi ${orders.length} đơn của ${driverName}`, 'ok');
+    } catch (e) {
+      showToast('Lỗi gắn phụ xe: ' + e.message, 'error');
+    }
+  }, [phieuList, statusMap, ngayTu, showToast]);
+
   const openHoiModal = useCallback(function(driverName, thenLenh) {
     setHoiModal(driverName);
     setHoiThenLenh(!!thenLenh);
@@ -959,6 +1034,21 @@ export default function DieuXePage() {
   const huyenMatcher = useMemo(() => buildHuyenMatcher(huyenList), [huyenList]);
   huyenMatcherRef.current = huyenMatcher; // luôn cập nhật ref mới nhất
 
+  // Đơn được đưa vào phân xe: tick thủ công ưu tiên; nếu không có tick thì dùng filter
+  const ordersForSugg = useMemo(() => {
+    if (selectedForSugg.size > 0) {
+      return phieuList.filter(p => selectedForSugg.has(p.row_key));
+    }
+    return phieuList.filter(p => {
+      const tt = getTT(p);
+      if (tt === 'da_giao' || tt === 'huy') return false;
+      if (suggFilters.ngayGiao && p.ngay_can_giao !== suggFilters.ngayGiao) return false;
+      if (suggFilters.boPhan.size < 3 && !suggFilters.boPhan.has(p.bo_phan)) return false;
+      return true;
+    });
+  }, [phieuList, selectedForSugg, getTT, suggFilters]);
+  ordersForSuggRef.current = ordersForSugg; // sync ref để callSuggestion đọc được
+
   const driverCapacity = useMemo(() => {
     const map = {};
     for (const d of driverList) {
@@ -971,7 +1061,7 @@ export default function DieuXePage() {
     const map = {};
     for (const p of phieuList) {
       const s = statusMap[p.row_key];
-      const laiXe = s ? (s.lai_xe_phan_cong || p.lai_xe) : p.lai_xe;
+      const laiXe = getLx(p);
       if (!laiXe) continue;
       // Chỉ tính đơn chưa giao xong (da_giao / huy không còn chiếm tải xe)
       const tt = s ? s.trang_thai : (p.trang_thai || 'cho_giao');
@@ -989,8 +1079,8 @@ export default function DieuXePage() {
     for (const d of driverList) map[d.ten] = { cho:0, dang:0, da:0, total:0 };
     for (const p of phieuList) {
       const s = statusMap[p.row_key];
-      const lx = s ? (s.lai_xe_phan_cong || p.lai_xe) : p.lai_xe;
-      const gn = s ? (s.giao_nhan_phan_cong || p.giao_nhan) : p.giao_nhan;
+      const lx = getLx(p);
+      const gn = getGn(p);
       const tt = getTT(p);
       for (const name of [lx, gn]) {
         if (name && map[name]) {
@@ -1060,8 +1150,11 @@ export default function DieuXePage() {
             {loading ? '…' : '🔄 Tải lại'}
           </button>
           <button onClick={openSuggModal} disabled={loading || !phieuList.length}
-            style={{ padding:'5px 12px', border:'1px solid #a7f3d0', borderRadius:6, background:'#ecfdf5', color:'#065f46', cursor:'pointer', fontSize:13, fontWeight:600 }}>
+            style={{ padding:'5px 12px', border:'1px solid #a7f3d0', borderRadius:6, background:'#ecfdf5', color:'#065f46', cursor:'pointer', fontSize:13, fontWeight:600, display:'flex', alignItems:'center', gap:6 }}>
             🗺️ Gợi ý phân xe
+            {selectedForSugg.size > 0 && (
+              <span style={{ background:'#065f46', color:'white', borderRadius:10, fontSize:11, padding:'1px 7px', fontWeight:700 }}>{selectedForSugg.size} đơn</span>
+            )}
           </button>
         </div>
       </div>
@@ -1187,22 +1280,56 @@ export default function DieuXePage() {
                                 </div>
                               </div>
                             )}
-                            {grp.showLoad && d.total > 0 && (
-                              <div style={{ display:'flex', gap:4, marginTop:6 }}>
-                                <button
-                                  onClick={e => { e.stopPropagation(); openHoiModal(name, true); }}
-                                  style={{ flex:1, padding:'3px 0', fontSize:11, fontWeight:700,
-                                    background:'#1e3a5f', color:'white', border:'none', borderRadius:5, cursor:'pointer' }}>
-                                  📋 In lệnh
-                                </button>
-                                <button
-                                  onClick={e => { e.stopPropagation(); openChotModal(name); }}
-                                  style={{ flex:1, padding:'3px 0', fontSize:11, fontWeight:700,
-                                    background:'#059669', color:'white', border:'none', borderRadius:5, cursor:'pointer' }}>
-                                  ✅ Chốt
-                                </button>
-                              </div>
-                            )}
+                            {grp.showLoad && d.total > 0 && (() => {
+                              // Phụ xe hiện tại của route này
+                              const drOrders = phieuList.filter(p => {
+                                const s = statusMap[p.row_key];
+                                return getLx(p) === name;
+                              });
+                              const currentGN = drOrders.length > 0
+                                ? (statusMap[drOrders[0].row_key]?.giao_nhan_phan_cong || drOrders[0].giao_nhan || '')
+                                : '';
+                              const gnList = driverList.filter(d2 => d2.vai_tro === 'giao_nhan' || d2.vai_tro === 'ca_hai');
+                              return (
+                                <>
+                                  <div style={{ display:'flex', gap:4, marginTop:6 }}>
+                                    <button
+                                      onClick={e => { e.stopPropagation(); openHoiModal(name, true); }}
+                                      style={{ flex:1, padding:'3px 0', fontSize:11, fontWeight:700,
+                                        background:'#1e3a5f', color:'white', border:'none', borderRadius:5, cursor:'pointer' }}>
+                                      📋 In lệnh
+                                    </button>
+                                    <button
+                                      onClick={e => { e.stopPropagation(); openChotModal(name); }}
+                                      style={{ flex:1, padding:'3px 0', fontSize:11, fontWeight:700,
+                                        background:'#059669', color:'white', border:'none', borderRadius:5, cursor:'pointer' }}>
+                                      ✅ Chốt
+                                    </button>
+                                    <button
+                                      onClick={e => { e.stopPropagation(); unassignDriver(name); }}
+                                      title="Hủy toàn bộ phân công"
+                                      style={{ padding:'3px 7px', fontSize:11, fontWeight:700,
+                                        background:'#fee2e2', color:'#dc2626', border:'1px solid #fca5a5', borderRadius:5, cursor:'pointer' }}>
+                                      🔄
+                                    </button>
+                                  </div>
+                                  {gnList.length > 0 && (
+                                    <div style={{ marginTop:5, display:'flex', alignItems:'center', gap:4 }} onClick={e => e.stopPropagation()}>
+                                      <span style={{ fontSize:10, color:'#9ca3af', whiteSpace:'nowrap' }}>📦 Phụ xe:</span>
+                                      <select value={currentGN}
+                                        onChange={e => assignGiaoNhanForDriver(name, e.target.value)}
+                                        style={{ flex:1, fontSize:11, padding:'2px 4px', borderRadius:5,
+                                          border: currentGN ? '1px solid #f59e0b' : '1px solid #d1d5db',
+                                          background: currentGN ? '#fffbeb' : 'white',
+                                          color: currentGN ? '#92400e' : '#6b7280', cursor:'pointer' }}>
+                                        <option value=''>— chọn —</option>
+                                        {gnList.map(d2 => <option key={d2.id} value={d2.ten}>{d2.ten}</option>)}
+                                      </select>
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })()}
                             {grp.showLoad && (() => {
                               const hoiCount = phieuHoiList.filter(h => h.lai_xe === name).length;
                               return (
@@ -1326,6 +1453,21 @@ export default function DieuXePage() {
                       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
                         <thead>
                           <tr style={{ background:'#f9fafb', borderBottom:'2px solid #e5e7eb' }}>
+                            <th style={{ padding:'9px 8px', width:34, minWidth:34 }}>
+                              <input type="checkbox" title="Tick tất cả đơn chưa giao trong nhóm này để phân xe"
+                                style={{ accentColor:'#065f46', cursor:'pointer' }}
+                                checked={rows.filter(p => getTT(p) !== 'da_giao' && getTT(p) !== 'huy').length > 0 &&
+                                  rows.filter(p => getTT(p) !== 'da_giao' && getTT(p) !== 'huy').every(p => selectedForSugg.has(p.row_key))}
+                                onChange={e => {
+                                  const eligible = rows.filter(p => getTT(p) !== 'da_giao' && getTT(p) !== 'huy').map(p => p.row_key);
+                                  setSelectedForSugg(prev => {
+                                    const next = new Set(prev);
+                                    if (e.target.checked) eligible.forEach(k => next.add(k));
+                                    else eligible.forEach(k => next.delete(k));
+                                    return next;
+                                  });
+                                }} />
+                            </th>
                             {[['#','36px'],['BP','50px'],['Mã / Phiếu','110px']].map(function(h) {
                               return <th key={h[0]} style={{ padding:'9px 10px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6b7280', whiteSpace:'nowrap', width:h[1], minWidth:h[1] }}>{h[0]}</th>;
                             })}
@@ -1350,7 +1492,18 @@ export default function DieuXePage() {
                             const kvInfo = groupByArea ? null : extractKhuVuc(p.dia_chi_giao, huyenMatcher);
                             const rowBg  = getTT(p)==='da_giao' ? '#f0fdf4' : p.don_gap ? '#fff7ed' : !p.ngay_can_giao ? '#fffbeb' : 'white';
                             return (
-                              <tr key={p.row_key} style={{ borderBottom:'1px solid #f3f4f6', background: rowBg }}>
+                              <tr key={p.row_key} style={{ borderBottom:'1px solid #f3f4f6', background: selectedForSugg.has(p.row_key) ? '#f0fdf4' : rowBg }}>
+                                <td style={{ padding:'9px 8px' }}>
+                                  {getTT(p) !== 'da_giao' && getTT(p) !== 'huy' && (
+                                    <input type="checkbox" style={{ accentColor:'#065f46', cursor:'pointer' }}
+                                      checked={selectedForSugg.has(p.row_key)}
+                                      onChange={() => setSelectedForSugg(prev => {
+                                        const next = new Set(prev);
+                                        if (next.has(p.row_key)) next.delete(p.row_key); else next.add(p.row_key);
+                                        return next;
+                                      })} />
+                                  )}
+                                </td>
                                 <td style={{ padding:'9px 10px', color:'#9ca3af', fontSize:11 }}>{i+1}</td>
                                 <td style={{ padding:'9px 10px' }}>
                                   <span style={{ padding:'2px 7px', borderRadius:4, fontSize:11, fontWeight:700, background:BP_COLOR[p.bo_phan]||'#6b7280', color:'white' }}>{p.bo_phan}</span>
@@ -1502,9 +1655,7 @@ export default function DieuXePage() {
                                   )}
                                 </td>
                                 {activeDriver && (() => {
-                                  const s = statusMap[p.row_key];
-                                  const lx = s ? s.lai_xe_phan_cong : p.lai_xe;
-                                  const inCart = lx === activeDriver;
+                                  const inCart = getLx(p) === activeDriver;
                                   const isSaving = assigningKey === p.row_key + '_lai_xe_phan_cong';
                                   return (
                                     <td style={{ padding:'6px 8px', textAlign:'center' }}>
@@ -1539,11 +1690,7 @@ export default function DieuXePage() {
 
       {/* ── STICKY CART BAR ── */}
       {activeDriver && (() => {
-        const cartOrders = phieuList.filter(p => {
-          const s = statusMap[p.row_key];
-          const lx = s ? s.lai_xe_phan_cong : p.lai_xe;
-          return lx === activeDriver;
-        });
+        const cartOrders = phieuList.filter(p => getLx(p) === activeDriver);
         const dInfo = driverList.find(d => d.ten === activeDriver) || {};
         return (
           <div style={{ position:'fixed', bottom:0, left:0, right:0, zIndex:9990, background:'#1e3a5f', color:'white', padding:'12px 24px', display:'flex', alignItems:'center', gap:12, boxShadow:'0 -4px 20px rgba(0,0,0,.25)' }}>
@@ -2156,11 +2303,7 @@ export default function DieuXePage() {
 
       {lenhModal && (() => {
         const driverInfo = driverList.find(d => d.ten === lenhModal) || {};
-        const orders = phieuList.filter(p => {
-          const s = statusMap[p.row_key];
-          const lx = s ? s.lai_xe_phan_cong : p.lai_xe;
-          return lx === lenhModal;
-        });
+        const orders = phieuList.filter(p => getLx(p) === lenhModal);
         const gn = orders.length > 0
           ? (statusMap[orders[0].row_key]?.giao_nhan_phan_cong || orders[0].giao_nhan || '—')
           : '—';
@@ -2219,8 +2362,15 @@ export default function DieuXePage() {
               </div>
 
               {/* Footer */}
-              <div style={{ padding:'12px 20px', borderTop:'1px solid #e5e7eb', display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <div style={{ padding:'12px 20px', borderTop:'1px solid #e5e7eb', display:'flex', gap:8, justifyContent:'flex-end', flexWrap:'wrap' }}>
                 <button onClick={() => setLenhModal(null)} style={{ padding:'8px 16px', border:'1px solid #d1d5db', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>Đóng</button>
+                {orders.length > 0 && (
+                  <button
+                    onClick={() => { unassignDriver(lenhModal); setLenhModal(null); }}
+                    style={{ padding:'8px 16px', border:'1px solid #fca5a5', borderRadius:8, background:'#fee2e2', color:'#dc2626', cursor:'pointer', fontSize:13, fontWeight:600 }}>
+                    🔄 Hủy phân công ({orders.length} đơn)
+                  </button>
+                )}
                 <button
                   onClick={() => printLenh(lenhModal)}
                   disabled={lenhDownloading || orders.length === 0}
@@ -2251,6 +2401,56 @@ export default function DieuXePage() {
 
             {/* Body */}
             <div style={{ padding:'16px 20px', maxHeight:'70vh', overflowY:'auto' }}>
+
+              {/* ── Bộ lọc đơn ── */}
+              <div style={{ marginBottom:14, border:'1px solid #e5e7eb', borderRadius:10, padding:'12px 14px', background:'#fafafa' }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+                  <div style={{ fontWeight:700, fontSize:13, color:'#374151' }}>
+                    📋 Đơn đưa vào phân xe
+                    <span style={{ marginLeft:8, fontWeight:400, fontSize:12, color: selectedForSugg.size > 0 ? '#065f46' : '#6b7280' }}>
+                      {selectedForSugg.size > 0
+                        ? `${selectedForSugg.size} đơn đã tick thủ công`
+                        : `${ordersForSugg.length} đơn (theo bộ lọc)`}
+                    </span>
+                  </div>
+                  {selectedForSugg.size > 0 && (
+                    <button onClick={() => setSelectedForSugg(new Set())}
+                      style={{ fontSize:11, color:'#dc2626', background:'none', border:'none', cursor:'pointer', padding:0 }}>✕ Bỏ chọn thủ công</button>
+                  )}
+                </div>
+                {selectedForSugg.size === 0 && (
+                  <div style={{ display:'flex', gap:16, flexWrap:'wrap', alignItems:'center' }}>
+                    {/* Lọc ngày giao */}
+                    <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                      <span style={{ fontSize:12, color:'#6b7280', whiteSpace:'nowrap' }}>📅 Ngày giao:</span>
+                      <input type="date" value={suggFilters.ngayGiao}
+                        onChange={e => setSuggFilters(f => ({ ...f, ngayGiao: e.target.value }))}
+                        style={{ fontSize:12, border:'1px solid #d1d5db', borderRadius:6, padding:'3px 8px', color:'#374151' }} />
+                      {suggFilters.ngayGiao && (
+                        <button onClick={() => setSuggFilters(f => ({ ...f, ngayGiao: '' }))}
+                          style={{ fontSize:11, color:'#9ca3af', background:'none', border:'none', cursor:'pointer' }}>✕</button>
+                      )}
+                    </div>
+                    {/* Lọc bộ phận */}
+                    <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                      <span style={{ fontSize:12, color:'#6b7280' }}>📁 Bộ phận:</span>
+                      {['MT','GT','B2B'].map(bp => {
+                        const on = suggFilters.boPhan.has(bp);
+                        return (
+                          <button key={bp} onClick={() => setSuggFilters(f => {
+                            const next = new Set(f.boPhan);
+                            if (next.has(bp)) next.delete(bp); else next.add(bp);
+                            return { ...f, boPhan: next };
+                          })} style={{ fontSize:12, padding:'2px 10px', borderRadius:6,
+                            border:`1px solid ${on ? BP_COLOR[bp]||'#6b7280' : '#e5e7eb'}`,
+                            background: on ? (BP_COLOR[bp]||'#6b7280') : 'white',
+                            color: on ? 'white' : '#9ca3af', cursor:'pointer', fontWeight:600 }}>{bp}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* ── Chọn xe tham gia hôm nay ── */}
               {selectedDriverIds !== null && (

@@ -50,8 +50,9 @@ export async function POST(request) {
     };
     if (trang_thai)            payload.trang_thai            = trang_thai;
     if (ghi_chu !== undefined) payload.ghi_chu               = ghi_chu || null;
-    if (lai_xe_phan_cong      !== undefined) payload.lai_xe_phan_cong      = lai_xe_phan_cong      || null;
-    if (giao_nhan_phan_cong   !== undefined) payload.giao_nhan_phan_cong   = giao_nhan_phan_cong   || null;
+    // Dùng ?? (không dùng ||) để chuỗi rỗng '' được lưu như sentinel "đã hủy rõ ràng"
+    if (lai_xe_phan_cong    !== undefined) payload.lai_xe_phan_cong    = lai_xe_phan_cong    ?? null;
+    if (giao_nhan_phan_cong !== undefined) payload.giao_nhan_phan_cong = giao_nhan_phan_cong ?? null;
     if (ghi_chu_giao          !== undefined) payload.ghi_chu_giao          = ghi_chu_giao          || null;
 
     const { data, error } = await supabase
