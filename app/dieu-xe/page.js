@@ -1235,7 +1235,7 @@ export default function DieuXePage() {
                       <button onClick={() => setActiveDriver(null)} style={{ fontSize:11, padding:'1px 8px', borderRadius:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#dc2626', cursor:'pointer' }}>✕ Bỏ chọn</button>
                     )}
                   </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px,1fr))', gap:6 }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px,1fr))', gap:8 }}>
                     {drivers.map(function(dr) {
                         const name = dr.ten;
                         const d    = driverStats[name] || { cho:0, dang:0, da:0, total:0 };
@@ -1479,7 +1479,7 @@ export default function DieuXePage() {
                                 </th>
                               );
                             })}
-                            {[['Khách hàng','160px'],['Địa chỉ','200px'],['Kho','80px'],['Hàng hóa','160px'],['Trạng thái','100px'],['Ghi chú','120px'],['Lái xe','100px'],['Giao nhận','80px']].map(function(h) {
+                            {[['Khách hàng','160px'],['Địa chỉ','200px'],['Kho','80px'],['Hàng hóa','160px'],['Trạng thái','100px'],['Ghi chú','200px'],['Lái xe','100px'],['Giao nhận','80px']].map(function(h) {
                               return <th key={h[0]} style={{ padding:'9px 10px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6b7280', whiteSpace:'nowrap', width:h[1], minWidth:h[1] }}>{h[0]}</th>;
                             })}
                             {activeDriver && <th style={{ padding:'9px 10px', textAlign:'center', fontSize:11, fontWeight:700, color:'#7c3aed', whiteSpace:'nowrap', width:80, minWidth:80 }}>🛒 Giỏ</th>}
@@ -1567,7 +1567,7 @@ export default function DieuXePage() {
                                       )}
                                     </div>
                                   ) : p.ghi_chu ? (
-                                    <span style={{ fontSize:11, color:'#6b7280' }} title={p.ghi_chu}>{p.ghi_chu.length > 45 ? p.ghi_chu.slice(0,45)+'…' : p.ghi_chu}</span>
+                                    <span style={{ fontSize:11, color:'#6b7280' }} title={p.ghi_chu}>{p.ghi_chu.length > 80 ? p.ghi_chu.slice(0,80)+'…' : p.ghi_chu}</span>
                                   ) : <span style={{ color:'#e5e7eb' }}>—</span>}
                                 </td>
                                 <td style={{ padding:'9px 10px' }}>
@@ -1577,7 +1577,7 @@ export default function DieuXePage() {
                                     whiteSpace:'nowrap', minWidth:82, opacity:isBusy?0.6:1,
                                   }}>{isBusy ? '…' : ttObj.label}</button>
                                 </td>
-                                <td style={{ padding:'9px 10px', maxWidth:120 }}>
+                                <td style={{ padding:'9px 10px', maxWidth:200 }}>
                                   {p.ghi_chu
                                     ? <span style={{ fontSize:11, color:'#374151', display:'block', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={p.ghi_chu}>{p.ghi_chu}</span>
                                     : <span style={{ color:'#e5e7eb' }}>—</span>}
@@ -1691,14 +1691,31 @@ export default function DieuXePage() {
       {/* ── STICKY CART BAR ── */}
       {activeDriver && (() => {
         const cartOrders = phieuList.filter(p => getLx(p) === activeDriver);
-        const dInfo = driverList.find(d => d.ten === activeDriver) || {};
+        const dInfo  = driverList.find(d => d.ten === activeDriver) || {};
+        const cap    = driverCapacity[activeDriver] ? driverCapacity[activeDriver].thung : 0;
+        const loaded = driverLoad[activeDriver] || 0;
+        const lPct   = cap > 0 ? Math.min(100, Math.round(loaded / cap * 100)) : 0;
+        const lColor = lPct >= 100 ? '#ef4444' : lPct >= 85 ? '#f59e0b' : '#34d399';
         return (
-          <div style={{ position:'fixed', bottom:0, left:0, right:0, zIndex:9990, background:'#1e3a5f', color:'white', padding:'12px 24px', display:'flex', alignItems:'center', gap:12, boxShadow:'0 -4px 20px rgba(0,0,0,.25)' }}>
+          <div style={{ position:'fixed', bottom:0, left:0, right:0, zIndex:9990, background:'#1e3a5f', color:'white', padding:'10px 24px', display:'flex', alignItems:'center', gap:16, boxShadow:'0 -4px 20px rgba(0,0,0,.25)' }}>
             <span style={{ fontSize:20 }}>🛒</span>
-            <div>
-              <div style={{ fontWeight:800, fontSize:14 }}>{activeDriver} {dInfo.bien_so ? '· ' + dInfo.bien_so : ''}</div>
+            {/* Tên xe + số đơn */}
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontWeight:800, fontSize:14, whiteSpace:'nowrap' }}>{activeDriver} {dInfo.bien_so ? '· ' + dInfo.bien_so : ''}</div>
               <div style={{ fontSize:12, opacity:.8 }}>{cartOrders.length} đơn trong giỏ</div>
             </div>
+            {/* Tải trọng */}
+            {cap > 0 && (
+              <div style={{ display:'flex', flexDirection:'column', gap:3, minWidth:160 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:11 }}>
+                  <span style={{ opacity:.7 }}>🏋️ Tải trọng</span>
+                  <span style={{ fontWeight:800, color:lColor }}>{loaded}/{cap} thùng ({lPct}%)</span>
+                </div>
+                <div style={{ background:'rgba(255,255,255,.2)', borderRadius:99, height:8, overflow:'hidden' }}>
+                  <div style={{ background:lColor, width:(lPct+'%'), height:'100%', transition:'width .4s', borderRadius:99 }} />
+                </div>
+              </div>
+            )}
             <div style={{ flex:1 }} />
             <button
               onClick={() => openHoiModal(activeDriver, true)}
