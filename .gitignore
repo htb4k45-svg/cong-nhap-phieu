@@ -16,3 +16,4 @@ build/
 .DS_Store
 *.pem
 npm-debug.log*
+scripts/service-account.json

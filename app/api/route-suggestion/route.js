@@ -82,7 +82,7 @@ function extractKhuVuc(diaChi) {
 // ── Hệ số quy đổi sang thùng A4 (đồng bộ sheets.js) ─────────────────────────
 const A4_EQUIV = { A3: 2, A4: 1, VO: 2, GVS: 1/3 };
 
-// ── Get tổng thùng A4 quy đổi ────────────────────────────────────────────────
+// ── Get tổng thùng A4 quy đổi (MT) ──────────────────────────────────────────
 function getTongThung(p) {
   if (p.tong_thung != null) return Number(p.tong_thung) || 0; // đã là A4-equiv từ parser
   if (p.san_pham && p.san_pham.length) {
@@ -94,6 +94,12 @@ function getTongThung(p) {
     return Math.ceil(raw);
   }
   return 0;
+}
+
+// B2B: tải tính trực tiếp theo kg (đồng bộ với app/dieu-xe/page.js) — MT vẫn theo thùng.
+function getLoadOf(p) {
+  if (p.bo_phan === 'B2B') return { kind: 'kg', value: Number(p.khoi_luong_kg) || 0 };
+  return { kind: 'thung', value: getTongThung(p) };
 }
 
 // ── Greedy VRP: group-by-area → bin-pack vào drivers ─────────────────────────
@@ -112,16 +118,21 @@ function greedyVRP(phieuList, drivers, soXe) {
     return { assignments: [], unassigned: phieuList };
   }
 
-  // Annotate phieu với khu_vuc + thung
+  // Annotate phieu với khu_vuc + tải (thùng cho MT, kg cho B2B — xem getLoadOf)
   // Ưu tiên dùng p.khu_vuc nếu client đã tính sẵn (dùng ward-matcher đầy đủ)
-  const annotated = phieuList.map(p => ({
-    ...p,
-    _khu_vuc: p.khu_vuc || extractKhuVuc(p.dia_chi_giao),
-    _thung:   getTongThung(p),
-  }));
+  const annotated = phieuList.map(p => {
+    const load = getLoadOf(p);
+    return {
+      ...p,
+      _khu_vuc: p.khu_vuc || extractKhuVuc(p.dia_chi_giao),
+      _thung:   load.kind === 'thung' ? load.value : 0,
+      _kg:      load.kind === 'kg'    ? load.value : 0,
+    };
+  });
 
-  // Tổng A4-equiv để tính virtual capacity
-  const totalA4 = annotated.reduce((s, p) => s + p._thung, 0);
+  // Tổng theo từng đơn vị để tính virtual capacity
+  const totalThung = annotated.reduce((s, p) => s + p._thung, 0);
+  const totalKg    = annotated.reduce((s, p) => s + p._kg, 0);
 
   // Số xe thực dùng
   const numVehicles = (soXe && soXe > 0)
@@ -133,9 +144,8 @@ function greedyVRP(phieuList, drivers, soXe) {
 
   // Virtual capacity cho xe unlimited khi chia nhiều xe
   // = ceil(total / numVehicles) × 1.15 (buffer 15% để nhóm khu_vuc không bị cắt đôi)
-  const virtualCap = numVehicles > 1
-    ? Math.ceil(totalA4 / numVehicles * 1.15)
-    : 0; // 0 = unlimited khi chỉ 1 xe
+  const virtualCapThung = numVehicles > 1 ? Math.ceil(totalThung / numVehicles * 1.15) : 0;
+  const virtualCapKg    = numVehicles > 1 ? Math.ceil(totalKg    / numVehicles * 1.15) : 0;
 
   // Group by khu_vuc
   const groupMap = {};
@@ -144,50 +154,61 @@ function greedyVRP(phieuList, drivers, soXe) {
     groupMap[p._khu_vuc].push(p);
   }
 
-  // Sort groups: total thung desc
+  // Sort groups: tổng tải desc (thùng + kg coi như cùng "điểm tải" để ưu tiên nhóm nặng trước)
   const groups = Object.entries(groupMap)
     .map(([area, items]) => ({
       area,
       items,
       totalThung: items.reduce((s, p) => s + p._thung, 0),
+      totalKg:    items.reduce((s, p) => s + p._kg, 0),
       assigned: false,
     }))
-    .sort((a, b) => b.totalThung - a.totalThung);
+    .sort((a, b) => (b.totalThung + b.totalKg) - (a.totalThung + a.totalKg));
 
-  // Init driver buckets
+  // Init driver buckets — mỗi bucket theo dõi riêng usedThung (MT) và usedKg (B2B)
   // Khi soXe > 1: giới hạn mỗi xe bằng virtualCap để buộc chia đều
-  //   cap = min(suc_tai_thung, virtualCap) — nếu xe có giới hạn thực thì lấy cái nhỏ hơn
+  //   cap = min(suc_tai_*, virtualCap) — nếu xe có giới hạn thực thì lấy cái nhỏ hơn
   //   virtualCap = 0 chỉ khi numVehicles === 1 (1 xe = không cần giới hạn)
   const buckets = selectedDrivers.map(d => ({
     driver: d,
     orders: [],
     usedThung: 0,
-    cap: numVehicles > 1
-      ? (d.suc_tai_thung > 0 ? Math.min(d.suc_tai_thung, virtualCap) : virtualCap)
-      : (d.suc_tai_thung > 0 ? d.suc_tai_thung : 0), // 0 = unlimited khi chỉ 1 xe
+    usedKg: 0,
+    capThung: numVehicles > 1
+      ? (d.suc_tai_thung > 0 ? Math.min(d.suc_tai_thung, virtualCapThung) : virtualCapThung)
+      : (d.suc_tai_thung > 0 ? d.suc_tai_thung : 0),
+    capKg: numVehicles > 1
+      ? (d.suc_tai_kg > 0 ? Math.min(d.suc_tai_kg, virtualCapKg) : virtualCapKg)
+      : (d.suc_tai_kg > 0 ? d.suc_tai_kg : 0),
   }));
+
+  const fitsBucket = (b, thung, kg) => {
+    const okThung = b.capThung === 0 || (b.usedThung + thung) <= b.capThung;
+    const okKg    = b.capKg === 0    || (b.usedKg    + kg)    <= b.capKg;
+    return okThung && okKg;
+  };
+  const remCap = (b) => {
+    const remThung = b.capThung === 0 ? Infinity : b.capThung - b.usedThung;
+    const remKg    = b.capKg    === 0 ? Infinity : b.capKg    - b.usedKg;
+    return Math.min(remThung, remKg);
+  };
 
   const assignedKeys = new Set();
 
   // Vòng 1: gán cả nhóm (giữ đơn cùng khu_vuc trên 1 xe)
   for (const grp of groups) {
-    if (grp.totalThung === 0 && grp.items.length === 0) continue;
+    if (grp.totalThung === 0 && grp.totalKg === 0 && grp.items.length === 0) continue;
 
-    // Tìm bucket phù hợp: còn đủ chỗ cho cả nhóm (hoặc unlimited)
+    // Tìm bucket phù hợp: còn đủ chỗ cho cả nhóm (cả thùng và kg) hoặc unlimited
     const bucket = buckets
-      .filter(b => {
-        if (b.cap === 0) return true; // unlimited
-        return b.usedThung + grp.totalThung <= b.cap;
-      })
+      .filter(b => fitsBucket(b, grp.totalThung, grp.totalKg))
       .sort((a, b) => {
         // Ưu tiên bucket đã có đơn của khu_vuc này
         const aHas = a.orders.some(o => o._khu_vuc === grp.area) ? 1 : 0;
         const bHas = b.orders.some(o => o._khu_vuc === grp.area) ? 1 : 0;
         if (bHas !== aHas) return bHas - aHas;
         // Sau đó: remaining capacity nhỏ nhất (first-fit decreasing)
-        const aRem = a.cap === 0 ? Infinity : a.cap - a.usedThung;
-        const bRem = b.cap === 0 ? Infinity : b.cap - b.usedThung;
-        return aRem - bRem;
+        return remCap(a) - remCap(b);
       })[0];
 
     if (!bucket) continue; // nhóm quá lớn, xử lý ở vòng 2
@@ -195,6 +216,7 @@ function greedyVRP(phieuList, drivers, soXe) {
     for (const item of grp.items) {
       bucket.orders.push(item);
       bucket.usedThung += item._thung;
+      bucket.usedKg    += item._kg;
       assignedKeys.add(item.row_key);
     }
   }
@@ -202,27 +224,23 @@ function greedyVRP(phieuList, drivers, soXe) {
   // Vòng 2: đơn chưa được gán (nhóm quá lớn) → gán lẻ từng đơn
   const overflow = annotated.filter(p => !assignedKeys.has(p.row_key));
   // Sắp xếp đơn lớn nhất trước
-  overflow.sort((a, b) => b._thung - a._thung);
+  overflow.sort((a, b) => (b._thung + b._kg) - (a._thung + a._kg));
 
   for (const item of overflow) {
     const bucket = buckets
-      .filter(b => {
-        if (b.cap === 0) return true;
-        return b.usedThung + item._thung <= b.cap;
-      })
+      .filter(b => fitsBucket(b, item._thung, item._kg))
       .sort((a, b) => {
         // Ưu tiên cùng khu_vuc
         const aHas = a.orders.some(o => o._khu_vuc === item._khu_vuc) ? 1 : 0;
         const bHas = b.orders.some(o => o._khu_vuc === item._khu_vuc) ? 1 : 0;
         if (bHas !== aHas) return bHas - aHas;
-        const aRem = a.cap === 0 ? Infinity : a.cap - a.usedThung;
-        const bRem = b.cap === 0 ? Infinity : b.cap - b.usedThung;
-        return aRem - bRem;
+        return remCap(a) - remCap(b);
       })[0];
 
     if (bucket) {
       bucket.orders.push(item);
       bucket.usedThung += item._thung;
+      bucket.usedKg    += item._kg;
       assignedKeys.add(item.row_key);
     }
   }
@@ -234,6 +252,9 @@ function greedyVRP(phieuList, drivers, soXe) {
       if (!areaMap[o._khu_vuc]) areaMap[o._khu_vuc] = 0;
       areaMap[o._khu_vuc]++;
     }
+    const pctThung = b.capThung > 0 ? Math.round(b.usedThung / b.capThung * 100) : null;
+    const pctKg    = b.capKg    > 0 ? Math.round(b.usedKg    / b.capKg    * 100) : null;
+    const loadPct  = [pctThung, pctKg].filter(x => x !== null).reduce((m, x) => Math.max(m, x), 0) || null;
     return {
       driver: {
         id:           b.driver.id,
@@ -249,12 +270,15 @@ function greedyVRP(phieuList, drivers, soXe) {
         dia_chi_giao: o.dia_chi_giao,
         khu_vuc:     o._khu_vuc,
         thung:       o._thung,
+        khoi_luong_kg: o._kg,
         bo_phan:     o.bo_phan,
         ngay_can_giao: o.ngay_can_giao || null,
       })),
       usedThung:  b.usedThung,
-      cap:        b.cap,
-      loadPct:    b.cap > 0 ? Math.round(b.usedThung / b.cap * 100) : null,
+      usedKg:     b.usedKg,
+      cap:        b.capThung, // giữ tên cũ để tương thích UI hiện có (thùng)
+      capKg:      b.capKg,
+      loadPct,
       areas:      areaMap,
     };
   });
@@ -267,6 +291,7 @@ function greedyVRP(phieuList, drivers, soXe) {
       dia_chi_giao: p.dia_chi_giao,
       khu_vuc:     p._khu_vuc,
       thung:       p._thung,
+      khoi_luong_kg: p._kg,
       bo_phan:     p.bo_phan,
     }));
 

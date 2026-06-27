@@ -95,28 +95,46 @@ function matchProvinceUI(normAddr) {
   return null;
 }
 
-function extractKhuVuc(diaChi, matcherFn) {
-  if (!diaChi) return { name: 'Chưa rõ', loai: null };
-
-  // Ưu tiên: địa chỉ ghi rõ "Tỉnh X" → dùng tên tỉnh, không chạy ward-matcher
-  // Tránh match nhầm: "Phường Việt Hưng, Tỉnh Quảng Ninh" → Quảng Ninh (không phải Việt Hưng HN)
+// Khoá sắp xếp/ghép đơn theo địa chỉ — Tỉnh/Thành phố LUÔN là khoá ưu tiên cao nhất.
+// Lý do: tên Phường/Xã, tên đường có thể trùng giữa nhiều tỉnh khác nhau (VD: "Phường Ba Đình"
+// có thể tồn tại ở cả Hà Nội và Thanh Hóa sau sáp nhập), nhưng Tỉnh/Thành phố thì không trùng.
+// Nếu chỉ so khớp theo tên phường/đường mà bỏ qua tỉnh, 2 đơn ở 2 tỉnh khác nhau có thể bị
+// xếp cạnh nhau một cách sai nguyên tắc → để Tỉnh làm khoá chính sẽ tránh được lỗi này.
+function addressSortKey(diaChi, matcherFn) {
   const addrNorm = normVN(diaChi);
-  const hasTinh = /\btinh\b/.test(addrNorm);
-  if (hasTinh) {
-    const p = matchProvinceUI(addrNorm);
-    if (p) return { name: p, loai: null };
-  }
+  const kv       = extractKhuVuc(diaChi, matcherFn);
+  // Nếu không xác định được tỉnh, dùng nguyên địa chỉ đã chuẩn hoá làm khoá chính để
+  // không vô tình ghép nhầm các đơn không rõ tỉnh với nhau.
+  return `${kv.tinh || addrNorm}__${kv.name}__${addrNorm}`;
+}
 
-  if (matcherFn) {
+// Phân cấp 2 tầng: Tỉnh/Thành phố (khối lớn — Hà Nội là 1 khối to) → Phường/Xã (cụm nhỏ bên trong).
+// kv.tinh: Tỉnh/Thành phố xác định được (khối ngoài) — null nếu không rõ.
+// kv.name: tên Phường/Xã/khu vực cụ thể (cụm trong) — dùng để chia nhỏ bên trong từng tỉnh.
+function extractKhuVuc(diaChi, matcherFn) {
+  if (!diaChi) return { name: 'Chưa rõ', loai: null, tinh: null };
+
+  const addrNorm = normVN(diaChi);
+  const tinh = matchProvinceUI(addrNorm); // Tỉnh/Thành phố — luôn xác định trước, dùng làm khối ngoài
+
+  // Chỉ tin kết quả ward-matcher khi địa chỉ CÓ ghi rõ từ khoá Phường/Xã/Thị trấn.
+  // Lý do: tên Phường/Xã trong CSDL có thể chỉ 3-4 ký tự (VD: "Chu") và trùng tình cờ với
+  // một từ bất kỳ trong tên đường/toà nhà (VD: "16 Phan Chu Trinh" chứa chữ "Chu") dù địa chỉ
+  // đó không hề thuộc phường đó — nếu không có từ khoá Phường/Xã đứng trước thì không đáng tin.
+  const hasWardMarker = /\bphuong\b|\bthi tran\b|\bxa\b|\bp\.\s|\bx\.\s/.test(addrNorm);
+  if (matcherFn && hasWardMarker) {
     const m = matcherFn(diaChi);
-    if (m) return { name: m.label, loai: m.loai };
+    if (m) return { name: m.label, loai: m.loai, tinh };
   }
+  // Không khớp được Phường/Xã cụ thể nhưng đã biết Tỉnh → dùng luôn tên Tỉnh làm cụm
+  if (tinh) return { name: tinh, loai: null, tinh };
+
   const d = diaChi.toLowerCase();
   const loai = /ph[ưu][ờo]ng/.test(d) ? 'phường'
              : /\bx[ãa]\b/.test(d)    ? 'xã'
              : /th[ỏi]\s*tr[ấa]n/.test(d) ? 'thị trấn'
              : null;
-  return { name: extractKhuVucFallback(diaChi), loai };
+  return { name: extractKhuVucFallback(diaChi), loai, tinh: null };
 }
 
 // Hệ số quy đổi sang thùng A4 (đồng bộ với sheets.js)
@@ -137,6 +155,25 @@ function getTongThung(p) {
   return 0;
 }
 
+// B2B: tải xe tính trực tiếp theo kg (khối lượng tạm tính), không quy đổi thùng.
+// MT: vẫn theo thùng A4-equiv như cũ.
+function getLoadOf(p) {
+  if (p.bo_phan === 'B2B') return { kind: 'kg', value: p.khoi_luong_kg || 0 };
+  return { kind: 'thung', value: getTongThung(p) };
+}
+
+// Tổng hợp % tải theo (các) đơn vị xe đang có hạn mức (thùng và/hoặc kg).
+function capInfo(driverCapacity, driverLoad, name) {
+  const cap  = driverCapacity[name]  || { thung: 0, kg: 0 };
+  const load = driverLoad[name]      || { thung: 0, kg: 0 };
+  const parts = [];
+  if (cap.thung > 0) parts.push({ unit: 'thùng', load: load.thung || 0, cap: cap.thung, pct: Math.round((load.thung || 0) / cap.thung * 100) });
+  if (cap.kg    > 0) parts.push({ unit: 'kg',    load: load.kg    || 0, cap: cap.kg,    pct: Math.round((load.kg    || 0) / cap.kg    * 100) });
+  const maxPct  = parts.length ? Math.max.apply(null, parts.map(function(x) { return x.pct; })) : 0;
+  const isFull  = parts.some(function(x) { return x.cap > 0 && x.load >= x.cap; });
+  return { parts, maxPct, isFull };
+}
+
 export default function DieuXePage() {
   const [ngayTu, setNgayTu]           = useState(toDateStr(new Date())); // ngày làm việc (dùng cho print/chốt/delivery-runs)
   const [filterFrom, setFilterFrom]   = useState('');
@@ -154,6 +191,7 @@ export default function DieuXePage() {
   const [activeDriver, setActiveDriver] = useState(null); // chế độ giỏ hàng
   const [searchQ, setSearchQ]         = useState('');
   const [groupByArea, setGroupByArea] = useState(true);
+  const [expandedAddr, setExpandedAddr] = useState(() => new Set()); // row_key có địa chỉ đang mở rộng (click để xem full)
   const [lastFetch, setLastFetch]     = useState(null);
   const [huyenList, setHuyenList]     = useState([]);
   const huyenMatcherRef    = useRef(null); // ref để callSuggestion đọc được mà không cần dep
@@ -163,6 +201,7 @@ export default function DieuXePage() {
   const [toast, setToast]               = useState(null);
   const [lenhModal, setLenhModal]         = useState(null); // driver name
   const [lenhDownloading, setLenhDownloading] = useState(false);
+  const [zaloSending, setZaloSending]         = useState(false);
   const [chotModal, setChotModal]         = useState(null); // driver name
   const [chotData, setChotData]           = useState({});   // { km_bat_dau, km_ket_thuc, ghi_chu, donHoan: Set }
   const [chotSaving, setChotSaving]       = useState(false);
@@ -235,6 +274,11 @@ export default function DieuXePage() {
 
   const cycleStatus = async (phieu) => {
     const cur  = statusMap[phieu.row_key] ? statusMap[phieu.row_key].trang_thai : 'cho_giao';
+    // Đã giao = đóng sổ — không cho phép đổi ngược trạng thái nữa
+    if (cur === 'da_giao') {
+      showToast('Đơn đã giao — không thể đổi trạng thái nữa', 'warn');
+      return;
+    }
     const next = TRANG_THAI[cur] ? TRANG_THAI[cur].next : 'cho_giao';
     setUpdatingKey(phieu.row_key);
     try {
@@ -422,13 +466,28 @@ export default function DieuXePage() {
     XLSX.writeFile(wb, fileName);
   }, [suggResult]);
 
-  const printLenh = (driverName) => {
+  const printLenh = async (driverName) => {
     const driverInfo = driverList.find(d => d.ten === driverName) || {};
-    const orders = phieuList.filter(p => getLx(p) === driverName);
+    // Gộp các đơn trùng/giống địa chỉ giao hàng nằm cạnh nhau để lái xe đi 1 lượt
+    // (Tỉnh/Thành phố là khoá ưu tiên — không ghép nhầm 2 tỉnh khác nhau dù trùng tên phường)
+    const orders = phieuList
+      .filter(p => getLx(p) === driverName)
+      .sort((a, b) => addressSortKey(a.dia_chi_giao, huyenMatcherRef.current).localeCompare(addressSortKey(b.dia_chi_giao, huyenMatcherRef.current)));
     const hoiItems = phieuHoiList.filter(h => h.lai_xe === driverName);
     const gn = orders.length > 0
       ? (statusMap[orders[0].row_key]?.giao_nhan_phan_cong || orders[0].giao_nhan || '—')
       : '—';
+
+    // Km xuất phát hôm nay = km kết thúc của chuyến chạy trước đó liền kề (delivery_runs)
+    let kmXuatPhatGoiY = '';
+    try {
+      const r = await fetch(`/api/delivery-runs?driver=${encodeURIComponent(driverName)}`);
+      const d = await r.json();
+      const prevRun = (d.runs || [])
+        .filter(run => run.ngay_chay < ngayTu && run.km_ket_thuc != null)
+        .sort((a, b) => b.ngay_chay.localeCompare(a.ngay_chay))[0];
+      if (prevRun) kmXuatPhatGoiY = prevRun.km_ket_thuc;
+    } catch { /* không chặn in nếu lỗi */ }
 
     const d = new Date(ngayTu + 'T00:00:00');
     const day   = String(d.getDate()).padStart(2,'0');
@@ -474,6 +533,7 @@ export default function DieuXePage() {
         <td>${p.so_phieu || ''}</td>
         <td>${p.ten_kh || ''}</td>
         <td>${p.dia_chi_giao || ''}</td>
+        <td class="center">${p.sdt_nguoi_nhan || ''}</td>
         ${spCells}
         <td class="center">${thung}</td>
         <td>${p.ghi_chu || ''}</td>
@@ -503,9 +563,11 @@ export default function DieuXePage() {
 
   /* Header */
   .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
-  .header-left { font-size: 8.5pt; line-height: 1.4; }
-  .header-left .company { font-weight: bold; font-size: 9.5pt; text-transform: uppercase; }
+  .header-left { display:flex; align-items:center; }
+  .header-left img { height: 92px; object-fit: contain; }
   .header-right { text-align: right; font-size: 8.5pt; line-height: 1.4; }
+  .header-right .company { font-weight: bold; font-size: 9.5pt; text-transform: uppercase; }
+  .header-right .doc-meta { margin-top: 6px; padding-top: 4px; border-top: 1px solid #ccc; color: #555; }
 
   /* Title */
   .title-block { text-align: center; margin: 4px 0 7px; border-top: 2px solid #000; border-bottom: 1px solid #000; padding: 4px 0; }
@@ -565,14 +627,17 @@ export default function DieuXePage() {
   <!-- Header -->
   <div class="header">
     <div class="header-left">
+      <img src="${window.location.origin}/logo-hh.png" alt="Hồng Hà"/>
+    </div>
+    <div class="header-right">
       <div class="company">Công ty CP Hồng Hà Văn Phòng Phẩm</div>
       <div>Trung tâm Thương mại &amp; Dịch vụ</div>
       <div>25 Lý Thường Kiệt, Hoàn Kiếm, Hà Nội</div>
       <div>Tel: 024 36524250 | dvkh@vpphongha.com.vn</div>
-    </div>
-    <div class="header-right">
-      <div style="font-size:9pt;color:#555;">Mã: HH-VX-001</div>
-      <div style="font-size:9pt;color:#555;">Lần ban hành: 1</div>
+      <div class="doc-meta">
+        <div>Mã: HH-VX-001</div>
+        <div>Lần ban hành: 1</div>
+      </div>
     </div>
   </div>
 
@@ -591,10 +656,10 @@ export default function DieuXePage() {
       <label>Biển số: </label><span class="val editable" contenteditable="true">${driverFull ? (driverFull.bien_so || '') : ''}</span>
     </div>
     <div class="info-item">
-      <label>Giao nhận: </label><span class="val editable" contenteditable="true">${displayGN !== '—' ? displayGN : ''}</span>
+      <label>Phụ xe: </label><span class="val editable" contenteditable="true">${displayGN !== '—' ? displayGN : ''}</span>
     </div>
     <div class="info-item">
-      <label>Số km xuất phát: </label><span class="val editable" contenteditable="true"></span>
+      <label>Số km xuất phát: </label><span class="val editable" contenteditable="true">${kmXuatPhatGoiY}</span>
     </div>
     <div class="info-item">
       <label>Số km kết thúc: </label><span class="val editable" contenteditable="true"></span>
@@ -613,6 +678,7 @@ export default function DieuXePage() {
         <th rowspan="2" style="width:82px">Số phiếu</th>
         <th rowspan="2">Tên khách hàng</th>
         <th rowspan="2">Địa chỉ giao</th>
+        <th rowspan="2" style="width:78px">SĐT người nhận</th>
         ${spCodes.length > 0 ? `<th colspan="${spCodes.length}">Giấy photo &amp; VPP</th>` : ''}
         <th rowspan="2" style="width:46px">Tổng<br/>thùng</th>
         <th rowspan="2" style="width:80px">Ghi chú</th>
@@ -622,7 +688,7 @@ export default function DieuXePage() {
     <tbody>
       ${orderRows}
       <tr class="total-row">
-        <td colspan="5" class="center bold">TỔNG</td>
+        <td colspan="6" class="center bold">TỔNG</td>
         ${totalCells}
         <td class="center bold">${totalThung || ''}</td>
         <td></td>
@@ -692,6 +758,30 @@ export default function DieuXePage() {
     if (!win) { showToast('Trình duyệt chặn popup — cho phép popup từ localhost', 'error'); return; }
     win.document.write(html);
     win.document.close();
+
+    // In lệnh xong → tự chuyển các đơn đang "Chờ giao" của xe này sang "Đang giao"
+    const choGiaoOrders = orders.filter(p => getTT(p) === 'cho_giao');
+    if (choGiaoOrders.length > 0) {
+      try {
+        await Promise.all(choGiaoOrders.map(p =>
+          fetch('/api/dispatch-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              row_key: p.row_key, bo_phan: p.bo_phan,
+              ngay_giao: p.ngay_can_giao || ngayTu, trang_thai: 'dang_giao',
+            }),
+          })
+        ));
+        setStatusMap(m => {
+          const next = { ...m };
+          choGiaoOrders.forEach(p => {
+            next[p.row_key] = { ...(next[p.row_key] || {}), trang_thai: 'dang_giao' };
+          });
+          return next;
+        });
+      } catch { /* không chặn in nếu cập nhật trạng thái lỗi */ }
+    }
   };
 
   const openChotModal = (driverName) => {
@@ -813,22 +903,24 @@ export default function DieuXePage() {
 
   const assignLaiXe = async (phieu, field, value) => {
     if (field === 'lai_xe_phan_cong' && value) {
-      const capObj = driverCapacity[value];
-      const cap = capObj ? capObj.thung : 0;
+      const capObj  = driverCapacity[value] || { thung: 0, kg: 0 };
+      const loadObj = driverLoad[value]     || { thung: 0, kg: 0 };
+      const { kind, value: orderVal } = getLoadOf(phieu);
+      const cap = kind === 'kg' ? capObj.kg : capObj.thung;
+      const unit = kind === 'kg' ? 'kg' : 'thùng';
       if (cap > 0) {
-        const curLoad    = driverLoad[value] || 0;
-        const orderThung = getTongThung(phieu);
+        const curLoad    = loadObj[kind] || 0;
         const curStatus  = statusMap[phieu.row_key];
         const curAssigned = curStatus ? curStatus.lai_xe_phan_cong : phieu.lai_xe;
-        const addThung   = (curAssigned === value) ? 0 : orderThung;
-        const newTotal   = curLoad + addThung;
+        const addVal     = (curAssigned === value) ? 0 : orderVal;
+        const newTotal   = curLoad + addVal;
         const pctNew     = Math.round(newTotal / cap * 100);
         if (newTotal > cap) {
-          showToast('Xe ' + value + ' da vuot suc tai! (' + curLoad + '/' + cap + ' thung). Khong the phan them.', 'error');
+          showToast('Xe ' + value + ' da vuot suc tai! (' + curLoad + '/' + cap + ' ' + unit + '). Khong the phan them.', 'error');
           return;
         }
         if (newTotal > cap * 0.85) {
-          showToast('Canh bao: Xe ' + value + ' sap day tai! (' + newTotal + '/' + cap + ' thung = ' + pctNew + '%)', 'warn');
+          showToast('Canh bao: Xe ' + value + ' sap day tai! (' + newTotal + '/' + cap + ' ' + unit + ' = ' + pctNew + '%)', 'warn');
         }
       }
     }
@@ -859,9 +951,21 @@ export default function DieuXePage() {
 
   // ── Hủy toàn bộ phân công lái xe ─────────────────────────────────────────────
   const unassignDriver = useCallback(async (driverName) => {
-    const orders = phieuList.filter(p => getLx(p) === driverName);
-    if (orders.length === 0) { showToast('Không có đơn nào để hủy', 'warn'); return; }
-    if (!window.confirm(`Hủy phân công ${orders.length} đơn của xe ${driverName}?\n\nTất cả sẽ về trạng thái Chờ giao — chưa có lái xe.`)) return;
+    const allOrders = phieuList.filter(p => getLx(p) === driverName);
+    if (allOrders.length === 0) { showToast('Không có đơn nào để hủy', 'warn'); return; }
+
+    // Đơn đã giao = đóng sổ — không hủy phân công, không lùi trạng thái nữa
+    const orders     = allOrders.filter(p => getTT(p) !== 'da_giao');
+    const daGiaoCount = allOrders.length - orders.length;
+
+    if (orders.length === 0) {
+      showToast('Tất cả đơn của xe này đã giao xong — không thể hủy phân công', 'warn');
+      return;
+    }
+
+    const confirmMsg = `Hủy phân công ${orders.length} đơn của xe ${driverName}?\n\nTất cả sẽ về trạng thái Chờ giao — chưa có lái xe.`
+      + (daGiaoCount > 0 ? `\n\n(${daGiaoCount} đơn đã giao sẽ được giữ nguyên, không bị hủy.)` : '');
+    if (!window.confirm(confirmMsg)) return;
     try {
       await Promise.all(orders.map(p =>
         fetch('/api/dispatch-status', {
@@ -883,11 +987,12 @@ export default function DieuXePage() {
         });
         return next;
       });
-      showToast(`✅ Đã hủy phân công ${orders.length} đơn của xe ${driverName}`, 'ok');
+      showToast(`✅ Đã hủy phân công ${orders.length} đơn của xe ${driverName}`
+        + (daGiaoCount > 0 ? ` (giữ nguyên ${daGiaoCount} đơn đã giao)` : ''), 'ok');
     } catch (e) {
       showToast('Lỗi hủy phân công: ' + e.message, 'error');
     }
-  }, [phieuList, statusMap, ngayTu, showToast]);
+  }, [phieuList, statusMap, ngayTu, showToast, getTT]);
 
   // ── Gắn phụ xe hàng loạt cho tất cả đơn của 1 lái xe ─────────────────────────
   const assignGiaoNhanForDriver = useCallback(async (driverName, giaoNhanName) => {
@@ -963,6 +1068,14 @@ export default function DieuXePage() {
     else { setSortBy(col); setSortDir('desc'); }
   }, [sortBy]);
 
+  const toggleAddrExpand = useCallback(function(rowKey) {
+    setExpandedAddr(function(prev) {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey); else next.add(rowKey);
+      return next;
+    });
+  }, []);
+
   const filtered = useMemo(() => {
     const q = normVN(searchQ);
     const list = phieuList.filter(function(p) {
@@ -984,9 +1097,17 @@ export default function DieuXePage() {
     list.sort(function(a, b) {
       const aVal = a[sortBy] || '';
       const bVal = b[sortBy] || '';
-      if (!aVal && !bVal) return 0;
+      if (!aVal && !bVal) {
+        // Cùng không có giá trị sort chính → gộp đơn trùng địa chỉ lại sát nhau
+        return normVN(a.dia_chi_giao || '').localeCompare(normVN(b.dia_chi_giao || ''));
+      }
       if (!aVal) return 1;
       if (!bVal) return -1;
+      if (aVal === bVal) {
+        // Cùng ngày (hoặc cùng giá trị sort) → xếp theo địa chỉ chuẩn hoá
+        // để các đơn trùng địa chỉ + trùng ngày giao nằm sát cạnh nhau
+        return normVN(a.dia_chi_giao || '').localeCompare(normVN(b.dia_chi_giao || ''));
+      }
       return sortDir === 'desc' ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal);
     });
     return list;
@@ -1066,9 +1187,9 @@ export default function DieuXePage() {
       // Chỉ tính đơn chưa giao xong (da_giao / huy không còn chiếm tải xe)
       const tt = s ? s.trang_thai : (p.trang_thai || 'cho_giao');
       if (tt === 'da_giao' || tt === 'huy') continue;
-      const thung = getTongThung(p);
-      if (!map[laiXe]) map[laiXe] = 0;
-      map[laiXe] += thung;
+      if (!map[laiXe]) map[laiXe] = { thung: 0, kg: 0 };
+      const { kind, value } = getLoadOf(p);
+      map[laiXe][kind] += value;
     }
     return map;
   }, [phieuList, statusMap]);
@@ -1094,27 +1215,55 @@ export default function DieuXePage() {
     return map;
   }, [driverList, phieuList, statusMap, getTT]);
 
+  // Phân cấp 2 tầng: khối ngoài = Tỉnh/Thành phố (Hà Nội là 1 khối to), cụm trong = Phường/Xã.
+  // Các tỉnh khác Hà Nội cũng theo đúng cấu trúc này (Tỉnh → khu vực bên trong), chỉ là ít đơn hơn nên khối nhỏ hơn.
   const grouped = useMemo(() => {
     if (!groupByArea) return [{ key: '__all', label: null, subGroups: { '__all': filtered } }];
-    const buckets = {
-      phuong: { key: 'phuong', label: 'Tp / Phuong', icon: '🏙️', color: '#1565C0', bg: '#E3F2FD', sub: {} },
-      xa:     { key: 'xa',     label: 'Huyen / Xa',  icon: '🌿', color: '#2E7D32', bg: '#E8F5E9', sub: {} },
-      other:  { key: 'other',  label: 'Chua xac dinh', icon: '📍', color: '#6b7280', bg: '#F3F4F6', sub: {} },
-    };
+    const TINH_COLOR = { 'Hà Nội': { icon: '🏙️', color: '#1565C0', bg: '#E3F2FD' } };
+    const DEFAULT_COLOR = { icon: '📍', color: '#2E7D32', bg: '#E8F5E9' };
+    const UNKNOWN_KEY = '__unknown_tinh';
+    const buckets = {};
     filtered.forEach(function(p) {
       const kv = extractKhuVuc(p.dia_chi_giao, huyenMatcher);
-      const bucket = kv.loai === 'phường' ? buckets.phuong
-                   : (kv.loai === 'xã' || kv.loai === 'thị trấn') ? buckets.xa
-                   : buckets.other;
+      const tinhKey = kv.tinh || UNKNOWN_KEY;
+      if (!buckets[tinhKey]) {
+        const c = TINH_COLOR[tinhKey] || DEFAULT_COLOR;
+        buckets[tinhKey] = {
+          key: tinhKey,
+          label: tinhKey === UNKNOWN_KEY ? 'Chưa xác định tỉnh' : tinhKey,
+          icon: tinhKey === UNKNOWN_KEY ? '📍' : c.icon,
+          color: tinhKey === UNKNOWN_KEY ? '#6b7280' : c.color,
+          bg: tinhKey === UNKNOWN_KEY ? '#F3F4F6' : c.bg,
+          sub: {},
+        };
+      }
+      const bucket = buckets[tinhKey];
       if (!bucket.sub[kv.name]) bucket.sub[kv.name] = [];
       bucket.sub[kv.name].push(p);
+    });
+    // Trong cùng 1 khu vực, gộp các đơn trùng địa chỉ giao lại sát nhau
+    // (sort ổn định nên thứ tự ngày/giờ trong từng nhóm địa chỉ vẫn giữ nguyên)
+    Object.values(buckets).forEach(function(b) {
+      Object.values(b.sub).forEach(function(arr) {
+        arr.sort(function(p1, p2) {
+          return normVN(p1.dia_chi_giao || '').localeCompare(normVN(p2.dia_chi_giao || ''));
+        });
+      });
     });
     const sortSub = function(sub) {
       return Object.fromEntries(Object.entries(sub).sort(function(a, b) { return a[0].localeCompare(b[0], 'vi'); }));
     };
+    // Sắp xếp khối tỉnh: Hà Nội lên đầu, "Chưa xác định tỉnh" xuống cuối, còn lại theo alphabet
     return Object.values(buckets)
       .map(function(b) { return Object.assign({}, b, { subGroups: sortSub(b.sub) }); })
-      .filter(function(b) { return Object.keys(b.subGroups).length > 0; });
+      .filter(function(b) { return Object.keys(b.subGroups).length > 0; })
+      .sort(function(a, b) {
+        if (a.key === UNKNOWN_KEY) return 1;
+        if (b.key === UNKNOWN_KEY) return -1;
+        if (a.key === 'Hà Nội') return -1;
+        if (b.key === 'Hà Nội') return 1;
+        return a.label.localeCompare(b.label, 'vi');
+      });
   }, [filtered, groupByArea, huyenMatcher]);
 
   return (
@@ -1231,9 +1380,6 @@ export default function DieuXePage() {
                 <div key={grp.label}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
                     <span style={{ fontSize:11, fontWeight:700, color:'#9ca3af', textTransform:'uppercase' }}>{grp.label}</span>
-                    {activeDriver && (
-                      <button onClick={() => setActiveDriver(null)} style={{ fontSize:11, padding:'1px 8px', borderRadius:10, border:'1px solid #fca5a5', background:'#fee2e2', color:'#dc2626', cursor:'pointer' }}>✕ Bỏ chọn</button>
-                    )}
                   </div>
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px,1fr))', gap:8 }}>
                     {drivers.map(function(dr) {
@@ -1241,19 +1387,29 @@ export default function DieuXePage() {
                         const d    = driverStats[name] || { cho:0, dang:0, da:0, total:0 };
                         const pct  = d.total ? Math.round(d.da / d.total * 100) : 0;
                         const isActive = activeDriver === name;
-                        const cap    = grp.showLoad ? (driverCapacity[name] ? driverCapacity[name].thung : 0) : 0;
-                        const loaded = grp.showLoad ? (driverLoad[name] || 0) : 0;
-                        const lPct   = cap > 0 ? Math.min(100, Math.round(loaded / cap * 100)) : 0;
-                        const lColor = lPct >= 100 ? '#dc2626' : lPct >= 85 ? '#f59e0b' : '#10b981';
+                        const loadInfo = grp.showLoad ? capInfo(driverCapacity, driverLoad, name) : { parts: [], maxPct: 0 };
                         return (
                           <div key={name}
                             onClick={() => setActiveDriver(isActive ? null : name)}
                             style={{
+                              position:'relative',
                               background: isActive ? grp.ab : '#f9fafb',
                               borderRadius:8, padding:'7px 10px', cursor:'pointer',
                               border: isActive ? ('2px solid ' + grp.bs) : '1px solid #e5e7eb',
                               transition:'border-color .15s',
                             }}>
+                            {isActive && (
+                              <button
+                                onClick={e => { e.stopPropagation(); setActiveDriver(null); }}
+                                title="Bỏ chọn"
+                                style={{
+                                  position:'absolute', top:-8, right:-8, width:20, height:20, borderRadius:'50%',
+                                  border:'1px solid #fca5a5', background:'#fee2e2', color:'#dc2626',
+                                  fontSize:11, fontWeight:700, cursor:'pointer', display:'flex',
+                                  alignItems:'center', justifyContent:'center', lineHeight:1, padding:0,
+                                  boxShadow:'0 1px 3px rgba(0,0,0,.15)',
+                                }}>✕</button>
+                            )}
                             <div style={{ fontSize:12, fontWeight:700, marginBottom:2, color: isActive ? grp.ac : '#111827', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                               {isActive ? '🛒 ' : ''}{name}
                             </div>
@@ -1269,17 +1425,21 @@ export default function DieuXePage() {
                               <span style={{ color:'#059669' }}>✅{d.da}</span>
                               <span style={{ marginLeft:'auto', color:'#9ca3af', fontWeight:600 }}>{pct}%</span>
                             </div>
-                            {grp.showLoad && cap > 0 && (
-                              <div style={{ marginTop:5 }}>
-                                <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:'#9ca3af', marginBottom:2 }}>
-                                  <span>🏋️ Tải</span>
-                                  <span style={{ color:lColor, fontWeight:700 }}>{loaded}/{cap} ({lPct}%)</span>
+                            {grp.showLoad && loadInfo.parts.map(function(part) {
+                              const pPct   = Math.min(100, part.pct);
+                              const pColor = pPct >= 100 ? '#dc2626' : pPct >= 85 ? '#f59e0b' : '#10b981';
+                              return (
+                                <div key={part.unit} style={{ marginTop:5 }}>
+                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:'#9ca3af', marginBottom:2 }}>
+                                    <span>🏋️ Tải ({part.unit})</span>
+                                    <span style={{ color:pColor, fontWeight:700 }}>{part.load}/{part.cap} ({part.pct}%)</span>
+                                  </div>
+                                  <div style={{ background:'#e5e7eb', borderRadius:99, height:5, overflow:'hidden' }}>
+                                    <div style={{ background:pColor, width:(pPct+'%'), height:'100%', transition:'width .4s' }} />
+                                  </div>
                                 </div>
-                                <div style={{ background:'#e5e7eb', borderRadius:99, height:5, overflow:'hidden' }}>
-                                  <div style={{ background:lColor, width:(lPct+'%'), height:'100%', transition:'width .4s' }} />
-                                </div>
-                              </div>
-                            )}
+                              );
+                            })}
                             {grp.showLoad && d.total > 0 && (() => {
                               // Phụ xe hiện tại của route này
                               const drOrders = phieuList.filter(p => {
@@ -1534,7 +1694,22 @@ export default function DieuXePage() {
                                   {p.sdt && <div style={{ fontSize:11, color:'#9ca3af' }}>☎ {p.sdt}</div>}
                                 </td>
                                 <td style={{ padding:'9px 10px' }}>
-                                  <div style={{ fontSize:12, color:'#374151', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:200 }} title={p.dia_chi_giao}>{p.dia_chi_giao||'—'}</div>
+                                  {(() => {
+                                    const isExpanded = expandedAddr.has(p.row_key);
+                                    return (
+                                      <div
+                                        onClick={() => toggleAddrExpand(p.row_key)}
+                                        title={isExpanded ? 'Bấm để thu gọn' : 'Bấm để xem đầy đủ địa chỉ'}
+                                        style={{
+                                          fontSize:12, color:'#374151', cursor:'pointer',
+                                          ...(isExpanded
+                                            ? { whiteSpace:'normal', wordBreak:'break-word', maxWidth:260, background:'#fffbeb', padding:'2px 4px', borderRadius:4, border:'1px solid #fde68a' }
+                                            : { overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:200 }),
+                                        }}>
+                                        {p.dia_chi_giao || '—'}
+                                      </div>
+                                    );
+                                  })()}
                                   {!groupByArea && kvInfo && kvInfo.name && kvInfo.name !== 'Khác' && kvInfo.name !== 'Chưa rõ' && (
                                     <span style={{ fontSize:10, padding:'1px 6px', borderRadius:10, marginTop:2, display:'inline-block', color: kvInfo.loai==='phường'?'#1565C0':'#2E7D32', background: kvInfo.loai==='phường'?'#E3F2FD':'#E8F5E9' }}>
                                       {kvInfo.loai==='phường' ? '🏙️' : '🌿'} {kvInfo.name}
@@ -1547,7 +1722,19 @@ export default function DieuXePage() {
                                     : <span style={{ color:'#e5e7eb' }}>—</span>}
                                 </td>
                                 <td style={{ padding:'9px 10px', maxWidth:160 }}>
-                                  {p.san_pham && p.san_pham.length > 0 ? (
+                                  {p.bo_phan === 'B2B' ? (
+                                    <div style={{ fontSize:11, color:'#374151', whiteSpace:'nowrap' }}>
+                                      <strong style={{ color:'#0891b2' }}>{(p.khoi_luong_kg || 0).toLocaleString('vi-VN')} kg</strong>
+                                      {p.the_tich_m3 > 0 && (
+                                        <span style={{ fontSize:10, color:'#9ca3af' }}> · {p.the_tich_m3}m³</span>
+                                      )}
+                                      {p.ghi_chu && (
+                                        <div style={{ fontSize:10, color:'#9ca3af', marginTop:2 }} title={p.ghi_chu}>
+                                          {p.ghi_chu.length > 60 ? p.ghi_chu.slice(0,60)+'…' : p.ghi_chu}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : p.san_pham && p.san_pham.length > 0 ? (
                                     <div>
                                       {p.san_pham.map(function(sp) {
                                         const thung = sp.so_luong_thung !== undefined ? sp.so_luong_thung : sp.so_luong;
@@ -1583,14 +1770,18 @@ export default function DieuXePage() {
                                     : <span style={{ color:'#e5e7eb' }}>—</span>}
                                 </td>
                                 <td style={{ padding:'6px 8px' }}>
-                                  {driverList.length > 0 ? (function() {
+                                  {driverList.length > 0 && getTT(p) !== 'da_giao' ? (function() {
                                     const s2 = statusMap[p.row_key];
                                     const assigned  = s2 ? s2.lai_xe_phan_cong : undefined;
                                     const fromSheet = p.lai_xe;
                                     const display   = assigned !== undefined && assigned !== null ? assigned : (fromSheet || '');
                                     const isSaving  = assigningKey === p.row_key + '_lai_xe_phan_cong';
-                                    const selCap    = display ? ((driverCapacity[display] && driverCapacity[display].thung) || 0) : 0;
-                                    const selLoad   = display ? (driverLoad[display] || 0) : 0;
+                                    const rowKind   = getLoadOf(p).kind; // 'kg' (B2B) hoặc 'thung' (MT)
+                                    const selCapObj = display ? (driverCapacity[display] || { thung:0, kg:0 }) : { thung:0, kg:0 };
+                                    const selLoadObj= display ? (driverLoad[display]     || { thung:0, kg:0 }) : { thung:0, kg:0 };
+                                    const selCap    = rowKind === 'kg' ? selCapObj.kg  : selCapObj.thung;
+                                    const selLoad   = rowKind === 'kg' ? selLoadObj.kg : selLoadObj.thung;
+                                    const selUnit   = rowKind === 'kg' ? 'kg' : 'thùng';
                                     const selPct    = selCap > 0 ? Math.round(selLoad / selCap * 100) : 0;
                                     const overload  = selCap > 0 && selPct >= 100;
                                     const nearFull  = selCap > 0 && selPct >= 85 && selPct < 100;
@@ -1606,11 +1797,12 @@ export default function DieuXePage() {
                                           {driverList
                                             .filter(function(d) { return d.vai_tro === 'lai_xe' || d.vai_tro === 'ca_hai'; })
                                             .map(function(d) {
-                                              const dc = driverCapacity[d.ten];
-                                              const cap2 = dc ? dc.thung : 0;
-                                              const load2 = driverLoad[d.ten] || 0;
+                                              const dc    = driverCapacity[d.ten] || { thung:0, kg:0 };
+                                              const dl    = driverLoad[d.ten]     || { thung:0, kg:0 };
+                                              const cap2  = rowKind === 'kg' ? dc.kg  : dc.thung;
+                                              const load2 = rowKind === 'kg' ? dl.kg  : dl.thung;
                                               const isFull = cap2 > 0 && load2 >= cap2;
-                                              const ps = cap2 > 0 ? (' (' + load2 + '/' + cap2 + ')') : '';
+                                              const ps = cap2 > 0 ? (' (' + load2 + '/' + cap2 + (rowKind==='kg' ? 'kg' : '') + ')') : '';
                                               const bs = d.bien_so ? (' [' + d.bien_so + ']') : '';
                                               return <option key={d.id} value={d.ten} disabled={isFull}>{d.ten}{bs}{ps}{isFull ? ' 🚫' : ''}</option>;
                                             })}
@@ -1621,7 +1813,7 @@ export default function DieuXePage() {
                                           return bienSo ? <div style={{ fontSize:10, color:'#6b7280', marginTop:2 }}>🚗 {bienSo}</div> : null;
                                         })()}
                                         {selCap > 0 && (
-                                          <div style={{ marginTop:2 }}>
+                                          <div style={{ marginTop:2 }} title={selLoad + '/' + selCap + ' ' + selUnit}>
                                             <div style={{ background:'#e5e7eb', borderRadius:99, height:3, overflow:'hidden' }}>
                                               <div style={{ background: overload?'#dc2626':nearFull?'#f59e0b':'#10b981', width:(Math.min(100,selPct)+'%'), height:'100%', transition:'width .3s' }} />
                                             </div>
@@ -1630,11 +1822,13 @@ export default function DieuXePage() {
                                       </div>
                                     );
                                   })() : (
-                                    <span style={{ fontSize:12, color:'#374151' }}>{p.lai_xe || <span style={{ color:'#d1d5db' }}>—</span>}</span>
+                                    <span style={{ fontSize:12, color:'#374151' }} title={getTT(p) === 'da_giao' ? 'Đơn đã giao — đóng sổ, không đổi lái xe nữa' : undefined}>
+                                      {getLx(p) || <span style={{ color:'#d1d5db' }}>—</span>}{getTT(p) === 'da_giao' ? ' 🔒' : ''}
+                                    </span>
                                   )}
                                 </td>
                                 <td style={{ padding:'6px 8px' }}>
-                                  {driverList.length > 0 ? (function() {
+                                  {driverList.length > 0 && getTT(p) !== 'da_giao' ? (function() {
                                     const s3 = statusMap[p.row_key];
                                     const assigned  = s3 ? s3.giao_nhan_phan_cong : undefined;
                                     const fromSheet = p.giao_nhan;
@@ -1651,21 +1845,43 @@ export default function DieuXePage() {
                                       </select>
                                     );
                                   })() : (
-                                    <span style={{ fontSize:12, color:'#374151' }}>{p.giao_nhan || <span style={{ color:'#d1d5db' }}>—</span>}</span>
+                                    <span style={{ fontSize:12, color:'#374151' }} title={getTT(p) === 'da_giao' ? 'Đơn đã giao — đóng sổ, không đổi giao nhận nữa' : undefined}>
+                                      {getGn(p) || <span style={{ color:'#d1d5db' }}>—</span>}{getTT(p) === 'da_giao' ? ' 🔒' : ''}
+                                    </span>
                                   )}
                                 </td>
                                 {activeDriver && (() => {
                                   const inCart = getLx(p) === activeDriver;
                                   const isSaving = assigningKey === p.row_key + '_lai_xe_phan_cong';
+                                  // Đơn đã giao = đóng sổ — không cho bỏ khỏi giỏ / đổi lái xe nữa
+                                  const isDaGiao = getTT(p) === 'da_giao';
+                                  if (isDaGiao) {
+                                    return (
+                                      <td style={{ padding:'6px 8px', textAlign:'center' }}>
+                                        <button
+                                          disabled
+                                          title="Đơn đã giao — không thể bỏ khỏi giỏ nữa"
+                                          style={{
+                                            padding:'4px 8px', borderRadius:6, border:'none', cursor:'not-allowed',
+                                            background: inCart ? '#d1fae5' : '#e5e7eb', color: inCart ? '#059669' : '#9ca3af',
+                                            fontWeight:700, fontSize:12, minWidth:52, opacity:0.7,
+                                          }}>
+                                          {inCart ? '🔒' : '—'}
+                                        </button>
+                                      </td>
+                                    );
+                                  }
                                   return (
                                     <td style={{ padding:'6px 8px', textAlign:'center' }}>
                                       <button
                                         disabled={isSaving}
+                                        title={inCart ? 'Bấm để bỏ khỏi giỏ' : 'Thêm vào giỏ'}
                                         onClick={() => {
-                                          if (!inCart) assignLaiXe(p, 'lai_xe_phan_cong', activeDriver);
+                                          if (inCart) assignLaiXe(p, 'lai_xe_phan_cong', '');
+                                          else assignLaiXe(p, 'lai_xe_phan_cong', activeDriver);
                                         }}
                                         style={{
-                                          padding:'4px 8px', borderRadius:6, border:'none', cursor: inCart ? 'default' : 'pointer',
+                                          padding:'4px 8px', borderRadius:6, border:'none', cursor: isSaving ? 'default' : 'pointer',
                                           background: inCart ? '#d1fae5' : '#7c3aed', color: inCart ? '#059669' : 'white',
                                           fontWeight:700, fontSize:12, minWidth:52, opacity: isSaving ? 0.5 : 1,
                                         }}>
@@ -1692,10 +1908,7 @@ export default function DieuXePage() {
       {activeDriver && (() => {
         const cartOrders = phieuList.filter(p => getLx(p) === activeDriver);
         const dInfo  = driverList.find(d => d.ten === activeDriver) || {};
-        const cap    = driverCapacity[activeDriver] ? driverCapacity[activeDriver].thung : 0;
-        const loaded = driverLoad[activeDriver] || 0;
-        const lPct   = cap > 0 ? Math.min(100, Math.round(loaded / cap * 100)) : 0;
-        const lColor = lPct >= 100 ? '#ef4444' : lPct >= 85 ? '#f59e0b' : '#34d399';
+        const cartLoadInfo = capInfo(driverCapacity, driverLoad, activeDriver);
         return (
           <div style={{ position:'fixed', bottom:0, left:0, right:0, zIndex:9990, background:'#1e3a5f', color:'white', padding:'10px 24px', display:'flex', alignItems:'center', gap:16, boxShadow:'0 -4px 20px rgba(0,0,0,.25)' }}>
             <span style={{ fontSize:20 }}>🛒</span>
@@ -1705,17 +1918,21 @@ export default function DieuXePage() {
               <div style={{ fontSize:12, opacity:.8 }}>{cartOrders.length} đơn trong giỏ</div>
             </div>
             {/* Tải trọng */}
-            {cap > 0 && (
-              <div style={{ display:'flex', flexDirection:'column', gap:3, minWidth:160 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', fontSize:11 }}>
-                  <span style={{ opacity:.7 }}>🏋️ Tải trọng</span>
-                  <span style={{ fontWeight:800, color:lColor }}>{loaded}/{cap} thùng ({lPct}%)</span>
+            {cartLoadInfo.parts.map(function(part) {
+              const pPct   = Math.min(100, part.pct);
+              const pColor = pPct >= 100 ? '#ef4444' : pPct >= 85 ? '#f59e0b' : '#34d399';
+              return (
+                <div key={part.unit} style={{ display:'flex', flexDirection:'column', gap:3, minWidth:160 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:11 }}>
+                    <span style={{ opacity:.7 }}>🏋️ Tải trọng ({part.unit})</span>
+                    <span style={{ fontWeight:800, color:pColor }}>{part.load}/{part.cap} {part.unit} ({part.pct}%)</span>
+                  </div>
+                  <div style={{ background:'rgba(255,255,255,.2)', borderRadius:99, height:8, overflow:'hidden' }}>
+                    <div style={{ background:pColor, width:(pPct+'%'), height:'100%', transition:'width .4s', borderRadius:99 }} />
+                  </div>
                 </div>
-                <div style={{ background:'rgba(255,255,255,.2)', borderRadius:99, height:8, overflow:'hidden' }}>
-                  <div style={{ background:lColor, width:(lPct+'%'), height:'100%', transition:'width .4s', borderRadius:99 }} />
-                </div>
-              </div>
-            )}
+              );
+            })}
             <div style={{ flex:1 }} />
             <button
               onClick={() => openHoiModal(activeDriver, true)}
@@ -1810,7 +2027,7 @@ export default function DieuXePage() {
           const s = statusMap[p.row_key];
           const lx = s ? (s.lai_xe_phan_cong || p.lai_xe) : p.lai_xe;
           return lx === chotModal;
-        });
+        }).sort((a, b) => addressSortKey(a.dia_chi_giao, huyenMatcherRef.current).localeCompare(addressSortKey(b.dia_chi_giao, huyenMatcherRef.current)));
         const kmBatDau  = chotData.km_bat_dau  ?? '';
         const kmKetThuc = chotData.km_ket_thuc ?? '';
         const kmThucTe  = kmBatDau !== '' && kmKetThuc !== '' ? (parseInt(kmKetThuc) - parseInt(kmBatDau)) : null;
@@ -1897,9 +2114,11 @@ export default function DieuXePage() {
                           <td style={{ padding:'6px 8px' }}>{p.ten_kh}</td>
                           <td style={{ padding:'6px 8px', color:'#6b7280', maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.dia_chi_giao}</td>
                           <td style={{ padding:'6px 8px', color:'#374151', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                            {p.san_pham && p.san_pham.length > 0
-                              ? p.san_pham.map(s => `${s.ma_sp}×${s.so_luong}`).join(', ')
-                              : (p.ghi_chu ? p.ghi_chu.slice(0,40) : '—')}
+                            {p.bo_phan === 'B2B'
+                              ? `${(p.khoi_luong_kg || 0).toLocaleString('vi-VN')} kg`
+                              : (p.san_pham && p.san_pham.length > 0
+                                  ? p.san_pham.map(s => `${s.ma_sp}×${s.so_luong}`).join(', ')
+                                  : (p.ghi_chu ? p.ghi_chu.slice(0,40) : '—'))}
                           </td>
                           <td style={{ padding:'4px 6px', minWidth:180 }}>
                             <input
@@ -2320,7 +2539,11 @@ export default function DieuXePage() {
 
       {lenhModal && (() => {
         const driverInfo = driverList.find(d => d.ten === lenhModal) || {};
-        const orders = phieuList.filter(p => getLx(p) === lenhModal);
+        // Gộp các đơn trùng/giống địa chỉ giao hàng nằm cạnh nhau
+        // (Tỉnh/Thành phố là khoá ưu tiên — không ghép nhầm 2 tỉnh khác nhau dù trùng tên phường)
+        const orders = phieuList
+          .filter(p => getLx(p) === lenhModal)
+          .sort((a, b) => addressSortKey(a.dia_chi_giao, huyenMatcherRef.current).localeCompare(addressSortKey(b.dia_chi_giao, huyenMatcherRef.current)));
         const gn = orders.length > 0
           ? (statusMap[orders[0].row_key]?.giao_nhan_phan_cong || orders[0].giao_nhan || '—')
           : '—';
@@ -2366,7 +2589,7 @@ export default function DieuXePage() {
                             <td style={{ padding:'6px 10px', fontWeight:600, color:'#1d4ed8' }}>{p.so_phieu}</td>
                             <td style={{ padding:'6px 10px' }}>{p.ten_kh}</td>
                             <td style={{ padding:'6px 10px', color:'#6b7280', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.dia_chi_giao}</td>
-                            <td style={{ padding:'6px 10px', color:'#374151' }}>{p.ghi_chu || (p.san_pham?.length > 0 ? p.san_pham.map(s=>s.ma_sp+'×'+s.so_luong).join(', ') : '—')}</td>
+                            <td style={{ padding:'6px 10px', color:'#374151' }}>{p.bo_phan === 'B2B' ? `${(p.khoi_luong_kg || 0).toLocaleString('vi-VN')} kg` : (p.ghi_chu || (p.san_pham?.length > 0 ? p.san_pham.map(s=>s.ma_sp+'×'+s.so_luong).join(', ') : '—'))}</td>
                             <td style={{ padding:'6px 10px' }}>
                               <span style={{ padding:'2px 8px', borderRadius:5, fontSize:11, fontWeight:700, background:ttInfo.bg, color:ttInfo.color }}>{ttInfo.label}</span>
                             </td>
@@ -2388,12 +2611,58 @@ export default function DieuXePage() {
                     🔄 Hủy phân công ({orders.length} đơn)
                   </button>
                 )}
-                <button
-                  onClick={() => printLenh(lenhModal)}
-                  disabled={lenhDownloading || orders.length === 0}
-                  style={{ padding:'8px 20px', background: orders.length === 0 ? '#9ca3af' : '#1e3a5f', color:'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: orders.length===0?'default':'pointer', opacity: lenhDownloading?0.7:1 }}>
-                  {lenhDownloading ? '⏳ Đang in...' : '🖨️ In lệnh điều xe'}
-                </button>
+                <div style={{ display:'flex', gap:8 }}>
+                  <button
+                    onClick={async () => {
+                      if (zaloSending || orders.length === 0) return;
+                      setZaloSending(true);
+                      try {
+                        const res = await fetch('/api/zalo/send-lenh', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            driverName: lenhModal,
+                            bienSo:     driverInfo.bien_so || '',
+                            giaoNhan:   gn,
+                            date:       ngayTu,
+                            orders:     orders.map(p => ({
+                              so_phieu:     p.so_phieu,
+                              ten_kh:       p.ten_kh,
+                              dia_chi_giao: p.dia_chi_giao,
+                              tong_thung:   getTongThung(p) || 0,
+                              san_pham:     p.san_pham || [],
+                              ghi_chu:      p.ghi_chu || '',
+                            })),
+                          }),
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                          showToast(`✅ Đã gửi lệnh cho ${lenhModal} qua Zalo`, 'success');
+                        } else {
+                          showToast(`❌ Zalo: ${data.error}`, 'error');
+                        }
+                      } catch (e) {
+                        showToast(`❌ Lỗi kết nối: ${e.message}`, 'error');
+                      } finally {
+                        setZaloSending(false);
+                      }
+                    }}
+                    disabled={zaloSending || orders.length === 0}
+                    title={orders.length === 0 ? 'Chưa có đơn' : 'Gửi lệnh vào nhóm Zalo'}
+                    style={{ padding:'8px 16px', background: orders.length===0 ? '#e5e7eb' : '#0068ff', color: orders.length===0 ? '#9ca3af' : 'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: orders.length===0?'default':'pointer', opacity: zaloSending?0.7:1 }}>
+                    {zaloSending ? '⏳ Đang gửi...' : '📱 Gửi Zalo'}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setLenhDownloading(true);
+                      try { await printLenh(lenhModal); }
+                      finally { setLenhDownloading(false); }
+                    }}
+                    disabled={lenhDownloading || orders.length === 0}
+                    style={{ padding:'8px 20px', background: orders.length === 0 ? '#9ca3af' : '#1e3a5f', color:'white', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor: orders.length===0?'default':'pointer', opacity: lenhDownloading?0.7:1 }}>
+                    {lenhDownloading ? '⏳ Đang in...' : '🖨️ In lệnh điều xe'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -2556,7 +2825,9 @@ export default function DieuXePage() {
                               <div style={{ width:`${Math.min(pct || 0, 100)}%`, height:'100%', background:barColor, borderRadius:4 }} />
                             </div>
                             <span style={{ fontSize:12, fontWeight:700, color:barColor, minWidth:50 }}>
-                              {asgn.usedThung} / {asgn.cap > 0 ? asgn.cap : '∞'} thùng{pct !== null ? ` (${pct}%)` : ''}
+                              {asgn.usedThung} / {asgn.cap > 0 ? asgn.cap : '∞'} thùng
+                              {asgn.usedKg > 0 ? ` · ${asgn.usedKg}/${asgn.capKg > 0 ? asgn.capKg : '∞'} kg` : ''}
+                              {pct !== null ? ` (${pct}%)` : ''}
                             </span>
                           </div>
                           <span style={{ fontSize:11, color:'#6b7280' }}>{asgn.orders.length} đơn</span>
@@ -2570,7 +2841,7 @@ export default function DieuXePage() {
                               <tr style={{ color:'#9ca3af' }}>
                                 <th style={{ textAlign:'left', paddingBottom:4, fontWeight:600 }}>Khách hàng</th>
                                 <th style={{ textAlign:'left', paddingBottom:4, fontWeight:600, maxWidth:220 }}>Địa chỉ</th>
-                                <th style={{ textAlign:'center', paddingBottom:4, fontWeight:600, width:60 }}>Thùng</th>
+                                <th style={{ textAlign:'center', paddingBottom:4, fontWeight:600, width:60 }}>Thùng/Kg</th>
                                 <th style={{ textAlign:'center', paddingBottom:4, fontWeight:600, width:45 }}>BP</th>
                               </tr>
                             </thead>
@@ -2582,7 +2853,9 @@ export default function DieuXePage() {
                                     <td style={{ padding:'3px 6px', color:'#6b7280', fontSize:11, maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                                       <span title={o.dia_chi_giao}>{o.dia_chi_giao || '—'}</span>
                                     </td>
-                                    <td style={{ textAlign:'center', padding:'3px 0', fontWeight:600 }}>{o.thung || 0}</td>
+                                    <td style={{ textAlign:'center', padding:'3px 0', fontWeight:600 }}>
+                                      {o.bo_phan === 'B2B' ? `${o.khoi_luong_kg || 0}kg` : (o.thung || 0)}
+                                    </td>
                                     <td style={{ textAlign:'center', padding:'3px 0' }}>
                                       <span style={{ fontSize:10, fontWeight:700, color: o.bo_phan==='MT'?'#7c3aed': o.bo_phan==='GT'?'#0891b2':'#15803d' }}>{o.bo_phan}</span>
                                     </td>
@@ -2604,7 +2877,7 @@ export default function DieuXePage() {
                       </div>
                       <div style={{ padding:'8px 14px' }}>
                         {suggResult.unassigned.map(function(o) {
-                          return <div key={o.row_key} style={{ fontSize:12, color:'#78350f', marginBottom:2 }}>{o.ten_kh} · {o.thung} thùng · {o.khu_vuc}</div>;
+                          return <div key={o.row_key} style={{ fontSize:12, color:'#78350f', marginBottom:2 }}>{o.ten_kh} · {o.bo_phan === 'B2B' ? `${o.khoi_luong_kg || 0}kg` : `${o.thung} thùng`} · {o.khu_vuc}</div>;
                         })}
                       </div>
                     </div>

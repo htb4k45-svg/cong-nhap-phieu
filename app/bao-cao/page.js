@@ -213,8 +213,9 @@ export default function BaoCaoPage() {
               <Card label="Chưa phân xe"       value={s.chua_phan_xe}     color="#b45309" bg="#fffbeb" />
               <Card label="Quá hạn"            value={s.qua_han}          color="#b91c1c" bg="#fef2f2" />
               <Card label="Chưa có ngày giao"  value={s.chua_co_ngay}     color="#6b7280" bg="#f9fafb" />
-              <Card label="Tổng thùng hàng"    value={s.tong_thung_tat_ca.toLocaleString('vi-VN')} color="#7c3aed" bg="#f5f3ff"
+              <Card label="Tổng thùng hàng (MT/GT)" value={s.tong_thung_tat_ca.toLocaleString('vi-VN')} color="#7c3aed" bg="#f5f3ff"
                 sub={`${fmtDate(from)} – ${fmtDate(to)}`} />
+              <Card label="Tổng KL hàng B2B (kg)"   value={(s.tong_kg_tat_ca || 0).toLocaleString('vi-VN')} color="#0891b2" bg="#ecfeff" />
             </div>
 
             {/* ── Tabs ── */}
@@ -248,6 +249,7 @@ export default function BaoCaoPage() {
                         <Th>Lái xe</Th>
                         <Th onClick={() => toggleSort('so_don')} sorted={sort.key==='so_don'} dir={sort.dir}>Số đơn</Th>
                         <Th onClick={() => toggleSort('tong_thung')} sorted={sort.key==='tong_thung'} dir={sort.dir}>Tổng thùng</Th>
+                        <Th onClick={() => toggleSort('tong_kg')} sorted={sort.key==='tong_kg'} dir={sort.dir}>KL B2B (kg)</Th>
                         <Th onClick={() => toggleSort('b2b')} sorted={sort.key==='b2b'} dir={sort.dir}>B2B</Th>
                         <Th onClick={() => toggleSort('gt')} sorted={sort.key==='gt'} dir={sort.dir}>GT</Th>
                         <Th onClick={() => toggleSort('mt')} sorted={sort.key==='mt'} dir={sort.dir}>MT</Th>
@@ -262,6 +264,7 @@ export default function BaoCaoPage() {
                           </Td>
                           <Td style={{ textAlign: 'center', fontWeight: 700, color: '#1d4ed8' }}>{d.so_don}</Td>
                           <Td style={{ textAlign: 'center' }}>{d.tong_thung}</Td>
+                          <Td style={{ textAlign: 'center', color: '#0891b2' }}>{d.tong_kg ? d.tong_kg.toLocaleString('vi-VN') : '–'}</Td>
                           <Td style={{ textAlign: 'center', color: d.b2b ? '#1d4ed8' : '#d1d5db' }}>{d.b2b || '–'}</Td>
                           <Td style={{ textAlign: 'center', color: d.gt  ? '#15803d' : '#d1d5db' }}>{d.gt  || '–'}</Td>
                           <Td style={{ textAlign: 'center', color: d.mt  ? '#7c3aed' : '#d1d5db' }}>{d.mt  || '–'}</Td>
@@ -275,6 +278,7 @@ export default function BaoCaoPage() {
                         <Td style={{ fontWeight: 700 }}>TỔNG CỘNG</Td>
                         <Td style={{ textAlign: 'center', fontWeight: 700 }}>{s.tong_don}</Td>
                         <Td style={{ textAlign: 'center', fontWeight: 700 }}>{s.tong_thung_tat_ca}</Td>
+                        <Td style={{ textAlign: 'center', fontWeight: 700, color: '#0891b2' }}>{(s.tong_kg_tat_ca || 0).toLocaleString('vi-VN')}</Td>
                         <Td style={{ textAlign: 'center', fontWeight: 700 }}>
                           {data.orders.filter(o => o.bo_phan === 'B2B').length}
                         </Td>
@@ -376,7 +380,7 @@ export default function BaoCaoPage() {
                           <Th>Ngày giao</Th>
                           <Th>Lái xe</Th>
                           <Th>Phụ xe</Th>
-                          <Th>Thùng</Th>
+                          <Th>Thùng/KL</Th>
                           <Th>Trạng thái</Th>
                         </tr>
                       </thead>
@@ -400,7 +404,9 @@ export default function BaoCaoPage() {
                             </Td>
                             <Td style={{ color: o.lai_xe ? '#15803d' : '#9ca3af' }}>{o.lai_xe || '–'}</Td>
                             <Td style={{ color: o.giao_nhan ? '#374151' : '#9ca3af' }}>{o.giao_nhan || '–'}</Td>
-                            <Td style={{ textAlign: 'center' }}>{o.tong_thung || '–'}</Td>
+                            <Td style={{ textAlign: 'center' }}>
+                              {o.bo_phan === 'B2B' ? (o.tong_kg ? `${o.tong_kg.toLocaleString('vi-VN')}kg` : '–') : (o.tong_thung || '–')}
+                            </Td>
                             <Td>
                               <span style={{
                                 background: { done: '#dcfce7', in_transit: '#dbeafe', failed: '#fef2f2', cancelled: '#f3f4f6' }[o.trang_thai] || '#fffbeb',

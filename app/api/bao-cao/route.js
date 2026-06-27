@@ -42,21 +42,27 @@ export async function GET(request) {
       const laiXe    = s.lai_xe_phan_cong  || p.lai_xe    || null;
       const giaoNhan = s.giao_nhan_phan_cong || p.giao_nhan || null;
       const trangThai = s.trang_thai || 'pending';
-      const ngayGiao  = p.ngay_can_giao || null;
+      // B2B không có "ngày cần giao" riêng trong schema mới → dùng Ngày HĐ (ngay_len_don) làm mốc
+      const ngayGiao  = p.ngay_can_giao || (p.bo_phan === 'B2B' ? p.ngay_len_don : null) || null;
 
       // Trạng thái tồn đọng
       let ton_dong_ly_do = null;
       if (!laiXe)                                                ton_dong_ly_do = 'Chưa phân xe';
       else if (ngayGiao && ngayGiao < today && trangThai === 'pending') ton_dong_ly_do = 'Quá hạn giao';
 
-      // Tổng thùng: lấy từ ghi_chu (parser ghi "Tổng: N") hoặc từ san_pham
+      // Tổng thùng (MT/GT) — B2B không quy đổi thùng nữa, dùng khoi_luong_kg riêng
       let tong_thung = 0;
-      if (p.ghi_chu) {
-        const m = p.ghi_chu.match(/Tổng:\s*(\d+)/);
-        if (m) tong_thung = parseInt(m[1]);
-      }
-      if (!tong_thung && p.san_pham?.length) {
-        tong_thung = p.san_pham.reduce((acc, sp) => acc + (sp.so_luong || 0), 0);
+      let tong_kg = 0;
+      if (p.bo_phan === 'B2B') {
+        tong_kg = p.khoi_luong_kg || 0;
+      } else {
+        if (p.ghi_chu) {
+          const m = p.ghi_chu.match(/Tổng:\s*(\d+)/);
+          if (m) tong_thung = parseInt(m[1]);
+        }
+        if (!tong_thung && p.san_pham?.length) {
+          tong_thung = p.san_pham.reduce((acc, sp) => acc + (sp.so_luong || 0), 0);
+        }
       }
 
       return {
@@ -74,6 +80,7 @@ export async function GET(request) {
         trang_thai:   trangThai,
         ghi_chu:      s.ghi_chu || p.ghi_chu || null,
         tong_thung,
+        tong_kg,
         ton_dong_ly_do,
       };
     });
@@ -86,6 +93,7 @@ export async function GET(request) {
       chua_co_ngay:     orders.filter(o => !o.ngay_giao).length,
       qua_han:          orders.filter(o => o.ngay_giao && o.ngay_giao < today && o.trang_thai === 'pending').length,
       tong_thung_tat_ca: orders.reduce((s, o) => s + o.tong_thung, 0),
+      tong_kg_tat_ca:    orders.reduce((s, o) => s + (o.tong_kg || 0), 0),
     };
 
     // ── 5. Tổng hợp theo lái xe ──────────────────────────────────────────────
@@ -95,7 +103,7 @@ export async function GET(request) {
       if (!driverMap[key]) {
         driverMap[key] = {
           lai_xe: key,
-          so_don: 0, tong_thung: 0,
+          so_don: 0, tong_thung: 0, tong_kg: 0,
           b2b: 0, gt: 0, mt: 0,
           qua_han: 0,
         };
@@ -103,6 +111,7 @@ export async function GET(request) {
       const d = driverMap[key];
       d.so_don++;
       d.tong_thung += o.tong_thung;
+      d.tong_kg    += (o.tong_kg || 0);
       if (o.bo_phan === 'B2B') d.b2b++;
       else if (o.bo_phan === 'GT') d.gt++;
       else if (o.bo_phan === 'MT') d.mt++;

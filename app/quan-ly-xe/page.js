@@ -50,6 +50,12 @@ export default function QuanLyXePage() {
   const [addForm, setAddForm]   = useState(EMPTY_FORM);
   const [msg, setMsg]           = useState(null);
 
+  // ── Lịch nghỉ / hỏng xe ────────────────────────────────────────────────────
+  const [absences, setAbsences]       = useState([]);
+  const [absenceModal, setAbsenceModal] = useState(null); // { id, ten }
+  const [absenceForm, setAbsenceForm]   = useState({ ngay_tu: today(), ngay_den: today(), ly_do: '' });
+  const [absenceSaving, setAbsenceSaving] = useState(false);
+
   const loadDrivers = async (all) => {
     setLoading(true);
     const res  = await fetch('/api/drivers?all=' + (all ? '1' : '0'));
@@ -58,7 +64,46 @@ export default function QuanLyXePage() {
     setLoading(false);
   };
 
+  const loadAbsences = async () => {
+    const res  = await fetch('/api/driver-absences');
+    const json = await res.json();
+    setAbsences(json.absences || []);
+  };
+
   useEffect(() => { loadDrivers(showAll); }, [showAll]);
+  useEffect(() => { loadAbsences(); }, []);
+
+  const openAbsenceModal = (d) => {
+    setAbsenceModal({ id: d.id, ten: d.ten });
+    setAbsenceForm({ ngay_tu: today(), ngay_den: today(), ly_do: '' });
+  };
+
+  const saveAbsence = async () => {
+    if (!absenceModal) return;
+    setAbsenceSaving(true);
+    try {
+      const res  = await fetch('/api/driver-absences', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ driver_id: absenceModal.id, ...absenceForm }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      flash(`Đã khai báo nghỉ cho ${absenceModal.ten}`, 'ok');
+      setAbsenceModal(null);
+      loadAbsences();
+    } catch (e) { flash(e.message, 'err'); }
+    finally { setAbsenceSaving(false); }
+  };
+
+  const deleteAbsence = async (id) => {
+    try {
+      const res  = await fetch('/api/driver-absences/' + id, { method: 'DELETE' });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      setAbsences(as => as.filter(a => a.id !== id));
+      flash('Đã xoá lịch nghỉ', 'ok');
+    } catch (e) { flash(e.message, 'err'); }
+  };
 
   const flash = (text, type) => {
     setMsg({ text, type });
@@ -220,6 +265,8 @@ export default function QuanLyXePage() {
                 onEditChange={(k,v) => setEditData(d => ({ ...d, [k]: v }))}
                 onSave={saveEdit} onCancel={() => setEditId(null)}
                 onToggleActive={toggleActive}
+                absences={absences}
+                onOpenAbsence={openAbsenceModal}
               />
               {showAll && inactive.length > 0 && (
                 <div style={{ marginTop:24 }}>
@@ -233,16 +280,59 @@ export default function QuanLyXePage() {
                     onEditChange={(k,v) => setEditData(d => ({ ...d, [k]: v }))}
                     onSave={saveEdit} onCancel={() => setEditId(null)}
                     onToggleActive={toggleActive} dimmed
+                    absences={absences}
+                    onOpenAbsence={openAbsenceModal}
                   />
                 </div>
               )}
+
+              {/* ── Lịch nghỉ / hỏng xe đang hiệu lực hoặc sắp tới ────────────── */}
+              <AbsenceList absences={absences} onDelete={deleteAbsence} />
             </>
           )}
 
           <div style={{ marginTop:20, fontSize:11, color:'#9ca3af' }}>
             💡 Sức tải = 0 nghĩa là không giới hạn. Biển số xe sẽ hiện trong dropdown phân công.
+            Dùng nút "🔧 Khai báo nghỉ" khi xe hỏng/tài xế nghỉ phép vài ngày — xe sẽ tự loại khỏi danh sách chọn trong đúng khoảng ngày đó rồi tự quay lại, không cần Vô hiệu hoá vĩnh viễn.
           </div>
         </>
+      )}
+
+      {/* ── Modal khai báo nghỉ ─────────────────────────────────────────────── */}
+      {absenceModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.5)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={() => setAbsenceModal(null)}>
+          <div style={{ background:'white', borderRadius:14, width:'100%', maxWidth:380, padding:20, boxShadow:'0 20px 60px rgba(0,0,0,.3)' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight:800, fontSize:15, marginBottom:14 }}>🔧 Khai báo nghỉ — {absenceModal.ten}</div>
+            <div style={{ display:'grid', gap:10 }}>
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:'#64748b', marginBottom:4 }}>Từ ngày</div>
+                <input type="date" value={absenceForm.ngay_tu}
+                  onChange={e => setAbsenceForm(f => ({ ...f, ngay_tu: e.target.value }))}
+                  style={{ width:'100%', padding:'7px 10px', border:'1px solid #cbd5e1', borderRadius:6, fontSize:13, boxSizing:'border-box' }} />
+              </div>
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:'#64748b', marginBottom:4 }}>Đến ngày</div>
+                <input type="date" value={absenceForm.ngay_den}
+                  onChange={e => setAbsenceForm(f => ({ ...f, ngay_den: e.target.value }))}
+                  style={{ width:'100%', padding:'7px 10px', border:'1px solid #cbd5e1', borderRadius:6, fontSize:13, boxSizing:'border-box' }} />
+              </div>
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:'#64748b', marginBottom:4 }}>Lý do</div>
+                <input value={absenceForm.ly_do} placeholder="Hỏng xe, Nghỉ phép..."
+                  onChange={e => setAbsenceForm(f => ({ ...f, ly_do: e.target.value }))}
+                  style={{ width:'100%', padding:'7px 10px', border:'1px solid #cbd5e1', borderRadius:6, fontSize:13, boxSizing:'border-box' }} />
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8, marginTop:16, justifyContent:'flex-end' }}>
+              <button onClick={() => setAbsenceModal(null)} style={{ padding:'8px 16px', background:'white', border:'1px solid #d1d5db', borderRadius:7, fontSize:13, cursor:'pointer' }}>Huỷ</button>
+              <button onClick={saveAbsence} disabled={absenceSaving} style={{ padding:'8px 20px', background:'#dc2626', color:'white', border:'none', borderRadius:7, fontWeight:700, fontSize:13, cursor:'pointer', opacity: absenceSaving ? 0.6 : 1 }}>
+                {absenceSaving ? 'Đang lưu…' : '💾 Lưu'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Tab: Báo cáo ──────────────────────────────────────────────────── */}
@@ -611,19 +701,22 @@ function BaoCaoTab() {
 
 // ── Sub-component: bảng danh sách xe ─────────────────────────────────────────
 
-function DriverTable({ drivers, editId, editData, saving, onStartEdit, onEditChange, onSave, onCancel, onToggleActive, dimmed }) {
+function DriverTable({ drivers, editId, editData, saving, onStartEdit, onEditChange, onSave, onCancel, onToggleActive, dimmed, absences = [], onOpenAbsence }) {
   if (drivers.length === 0) return (
     <div style={{ textAlign:'center', padding:40, color:'#d1d5db', border:'1px dashed #e5e7eb', borderRadius:10 }}>
       Chưa có lái xe nào
     </div>
   );
 
+  const todayStr = today();
+  const absenceOf = (driverId) => absences.find(a => a.driver_id === driverId && a.ngay_tu <= todayStr && a.ngay_den >= todayStr);
+
   return (
     <div style={{ overflowX:'auto', borderRadius:12, border:'1px solid #e5e7eb', opacity: dimmed ? 0.6 : 1 }}>
       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
         <thead>
           <tr style={{ background:'#f9fafb', borderBottom:'2px solid #e5e7eb' }}>
-            {['Tên lái xe','Vai trò','Biển số xe','SĐT','Sức tải (thùng)','Sức tải (kg)','Thao tác'].map(h => (
+            {['Tên lái xe','Vai trò','Biển số xe','SĐT','Sức tải (thùng)','Sức tải (kg)','Trạng thái','Thao tác'].map(h => (
               <th key={h} style={{ padding:'10px 14px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6b7280', whiteSpace:'nowrap' }}>{h}</th>
             ))}
           </tr>
@@ -632,6 +725,7 @@ function DriverTable({ drivers, editId, editData, saving, onStartEdit, onEditCha
           {drivers.map(d => {
             const isEdit = editId === d.id;
             const vc = VAI_TRO_COLOR[d.vai_tro] || { bg:'#f3f4f6', color:'#374151' };
+            const curAbsence = absenceOf(d.id);
             return (
               <tr key={d.id} style={{ borderBottom:'1px solid #f3f4f6', background: isEdit ? '#eff6ff' : 'white' }}>
                 <td style={{ padding:'10px 14px', fontWeight:600 }}>
@@ -670,6 +764,13 @@ function DriverTable({ drivers, editId, editData, saving, onStartEdit, onEditCha
                     ? <input type="number" min="0" value={editData.suc_tai_kg} onChange={e => onEditChange('suc_tai_kg', e.target.value)} style={{ ...inputStyle, width:80 }} />
                     : <span style={{ color:'#9ca3af', fontSize:12 }}>{d.suc_tai_kg > 0 ? d.suc_tai_kg + ' kg' : '—'}</span>}
                 </td>
+                <td style={{ padding:'10px 14px' }}>
+                  {curAbsence
+                    ? <span title={curAbsence.ly_do || ''} style={{ padding:'2px 8px', borderRadius:5, fontSize:11, fontWeight:700, background:'#fef3c7', color:'#b45309' }}>
+                        🔧 Đang nghỉ (đến {fmtDate(curAbsence.ngay_den)})
+                      </span>
+                    : <span style={{ color:'#9ca3af', fontSize:11 }}>—</span>}
+                </td>
                 <td style={{ padding:'8px 14px', whiteSpace:'nowrap' }}>
                   {isEdit ? (
                     <div style={{ display:'flex', gap:6 }}>
@@ -677,11 +778,14 @@ function DriverTable({ drivers, editId, editData, saving, onStartEdit, onEditCha
                       <button onClick={onCancel} style={btnCancel}>Huỷ</button>
                     </div>
                   ) : (
-                    <div style={{ display:'flex', gap:6 }}>
+                    <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
                       <button onClick={() => onStartEdit(d)} style={btnEdit}>✏️ Sửa</button>
                       <button onClick={() => onToggleActive(d)} style={d.active !== false ? btnDeactivate : btnActivate}>
                         {d.active !== false ? 'Vô hiệu' : '✅ Kích hoạt'}
                       </button>
+                      {onOpenAbsence && (
+                        <button onClick={() => onOpenAbsence(d)} style={btnAbsence}>🔧 Khai báo nghỉ</button>
+                      )}
                     </div>
                   )}
                 </td>
@@ -700,3 +804,55 @@ const btnCancel    = { padding:'5px 10px', background:'white', border:'1px solid
 const btnEdit      = { padding:'5px 10px', background:'#eff6ff', border:'1px solid #bfdbfe', color:'#1d4ed8', borderRadius:6, fontSize:12, cursor:'pointer', fontWeight:600 };
 const btnDeactivate= { padding:'5px 10px', background:'#fef2f2', border:'1px solid #fecaca', color:'#dc2626', borderRadius:6, fontSize:12, cursor:'pointer' };
 const btnActivate  = { padding:'5px 10px', background:'#f0fdf4', border:'1px solid #bbf7d0', color:'#059669', borderRadius:6, fontSize:12, cursor:'pointer', fontWeight:600 };
+const btnAbsence   = { padding:'5px 10px', background:'#fffbeb', border:'1px solid #fde68a', color:'#b45309', borderRadius:6, fontSize:12, cursor:'pointer', fontWeight:600 };
+
+// ── Sub-component: danh sách lịch nghỉ đang/sắp hiệu lực ─────────────────────
+
+function AbsenceList({ absences, onDelete }) {
+  const todayStr = today();
+  const upcoming = (absences || [])
+    .filter(a => a.ngay_den >= todayStr)
+    .sort((a, b) => a.ngay_tu.localeCompare(b.ngay_tu));
+
+  if (upcoming.length === 0) return null;
+
+  return (
+    <div style={{ marginTop:24 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:'#9ca3af', textTransform:'uppercase', marginBottom:8 }}>
+        🔧 Lịch nghỉ / hỏng xe đang & sắp tới ({upcoming.length})
+      </div>
+      <div style={{ overflowX:'auto', borderRadius:12, border:'1px solid #fde68a' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+          <thead>
+            <tr style={{ background:'#fffbeb', borderBottom:'2px solid #fde68a' }}>
+              {['Tên','Từ ngày','Đến ngày','Lý do','Trạng thái',''].map(h => (
+                <th key={h} style={{ padding:'8px 14px', textAlign:'left', fontSize:11, fontWeight:700, color:'#92400e', whiteSpace:'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {upcoming.map(a => {
+              const active = a.ngay_tu <= todayStr;
+              return (
+                <tr key={a.id} style={{ borderBottom:'1px solid #fef3c7' }}>
+                  <td style={{ padding:'8px 14px', fontWeight:600 }}>{a.driver_name}</td>
+                  <td style={{ padding:'8px 14px' }}>{fmtDate(a.ngay_tu)}</td>
+                  <td style={{ padding:'8px 14px' }}>{fmtDate(a.ngay_den)}</td>
+                  <td style={{ padding:'8px 14px', color:'#6b7280' }}>{a.ly_do || '—'}</td>
+                  <td style={{ padding:'8px 14px' }}>
+                    {active && <span style={{ fontSize:11, fontWeight:700, color:'#b45309' }}>Đang nghỉ</span>}
+                  </td>
+                  <td style={{ padding:'8px 14px', textAlign:'right' }}>
+                    <button onClick={() => onDelete(a.id)} style={{ padding:'4px 10px', background:'white', border:'1px solid #fca5a5', color:'#dc2626', borderRadius:6, fontSize:12, cursor:'pointer' }}>
+                      Xoá
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
