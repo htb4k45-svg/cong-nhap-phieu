@@ -855,7 +855,44 @@ export default function DieuXePage() {
           ghi_chu:      chotData.ghi_chu     || null,
         }),
       });
-      // 3. Cập nhật phieu_hoi đã lấy trong cùng chuyến
+      // 3. Lưu snapshot lịch sử điều xe (dispatch_history) — tránh mất dữ liệu khi Sheet bị sửa/xóa
+      const donDaGiao = orders.filter(p => !(chotData.donHoan && chotData.donHoan.has(p.row_key)));
+      if (donDaGiao.length > 0) {
+        const daGiaoAt = new Date().toISOString();
+        const snapshots = donDaGiao.map(p => {
+          const sp = p.san_pham || [];
+          const tongThung = sp.reduce((s, x) => s + (x.so_luong_thung || 0), 0);
+          const tongKg    = typeof p.tong_kl_kg === 'number' ? p.tong_kl_kg : 0;
+          return {
+            row_key:      p.row_key,
+            so_phieu:     p.so_phieu     || p.row_key,
+            ma_lenh:      p.ma_lenh      || null,
+            bo_phan:      p.bo_phan      || null,
+            ngay_giao:    p.ngay_can_giao || ngayTu,
+            da_giao_at:   daGiaoAt,
+            lai_xe:       getLx(p) || null,
+            giao_nhan:    getGn(p) || null,
+            ghi_chu_giao: (chotData.donGhiChu && chotData.donGhiChu[p.row_key]) || null,
+            ma_kh:        p.ma_kh        || null,
+            ten_kh:       p.ten_kh       || null,
+            dia_chi_giao: p.dia_chi_giao || null,
+            khu_vuc:      p.khu_vuc      || null,
+            san_pham:     sp,
+            tong_thung:   tongThung,
+            tong_kg:      tongKg,
+            don_gap:      p.don_gap      || false,
+            ngay_len_don: p.ngay_len_don || p.ngay_nhap || null,
+            snapshot_data: p,  // raw phieu object đầy đủ
+          };
+        });
+        fetch('/api/dispatch-history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(snapshots),
+        }).catch(e => console.warn('dispatch_history save failed:', e.message));
+      }
+
+      // 4. Cập nhật phieu_hoi đã lấy trong cùng chuyến
       if (chotData.phieuHoiDaLay && chotData.phieuHoiDaLay.size > 0) {
         await Promise.all([...chotData.phieuHoiDaLay].map(id =>
           fetch('/api/phieu-hoi', {
@@ -941,6 +978,11 @@ export default function DieuXePage() {
       const json = await res.json();
       if (json.data) {
         setStatusMap(function(m) { return Object.assign({}, m, { [phieu.row_key]: Object.assign({}, m[phieu.row_key], json.data) }); });
+      }
+      // Phân công đã lưu vào hệ thống (Supabase) — nhưng nếu ghi ngược Google Sheet lỗi
+      // (VD thiếu cột, sai tab) thì báo cho người dùng biết, tránh tưởng đã ghi mà thực ra chưa.
+      if (json.sheet_writeback && json.sheet_writeback.ok === false) {
+        showToast('Đã lưu phân công, nhưng ghi vào Google Sheet thất bại: ' + json.sheet_writeback.error, 'warn');
       }
     } catch (e) {
       console.error('assignLaiXe error:', e);

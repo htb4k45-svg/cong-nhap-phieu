@@ -66,26 +66,42 @@ export async function POST(request) {
     // ── Ghi ngược lại Google Sheet (nếu có phân công lái xe mới) ─────────────
     const scriptUrl = process.env.APPS_SCRIPT_WRITE_URL;
     const hasAssignment = lai_xe_phan_cong !== undefined || giao_nhan_phan_cong !== undefined;
+    let sheetWriteback = null;
     if (scriptUrl && hasAssignment) {
       // Await với timeout 5s — Vercel serverless tắt ngay khi return nên không dùng fire-and-forget
-      await Promise.race([
-        fetch(scriptUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            row_key,
-            so_phieu:   row_key,
-            bo_phan:    bo_phan || 'B2B',
-            lai_xe:     lai_xe_phan_cong,
-            giao_nhan:  giao_nhan_phan_cong,
-            ngay_giao:  ngay_giao || null,
+      try {
+        const res = await Promise.race([
+          fetch(scriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              row_key,
+              so_phieu:   row_key,
+              bo_phan:    bo_phan || 'B2B',
+              lai_xe:     lai_xe_phan_cong,
+              giao_nhan:  giao_nhan_phan_cong,
+              ngay_giao:  ngay_giao || null,
+            }),
           }),
-        }).catch(e => console.warn('Apps Script write failed:', e.message)),
-        new Promise(resolve => setTimeout(resolve, 5000)),
-      ]);
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout 5s')), 5000)),
+        ]);
+        // Trước đây chỉ catch lỗi network — Apps Script trả HTTP 200 kèm {ok:false, error}
+        // khi không tìm thấy cột/hàng thì bị bỏ qua hoàn toàn, ghi ngược coi như thất bại âm thầm.
+        const json = await res.json().catch(() => null);
+        if (!json || json.ok === false) {
+          const errMsg = json?.error || `HTTP ${res.status}`;
+          console.warn('Apps Script writeback trả lỗi:', errMsg);
+          sheetWriteback = { ok: false, error: errMsg };
+        } else {
+          sheetWriteback = { ok: true };
+        }
+      } catch (e) {
+        console.warn('Apps Script write failed:', e.message);
+        sheetWriteback = { ok: false, error: e.message };
+      }
     }
 
-    return NextResponse.json({ data });
+    return NextResponse.json({ data, sheet_writeback: sheetWriteback });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

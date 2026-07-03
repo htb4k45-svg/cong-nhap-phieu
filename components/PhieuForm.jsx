@@ -17,10 +17,12 @@ const DAC_DIEM_MAP = {
 
 // Sản phẩm cố định
 const SP_LIST = [
-  { ma_sp: 'A3',  ten_sp: 'Sản phẩm A3' },
-  { ma_sp: 'A4',  ten_sp: 'Sản phẩm A4' },
-  { ma_sp: 'VO',  ten_sp: 'Nhóm Vở' },
-  { ma_sp: 'GVS', ten_sp: 'Giấy vệ sinh' },
+  { ma_sp: 'A3',   ten_sp: 'Sản phẩm A3' },
+  { ma_sp: 'A4',   ten_sp: 'Sản phẩm A4' },
+  { ma_sp: 'VO',   ten_sp: 'Nhóm Vở' },
+  { ma_sp: 'GVS',  ten_sp: 'Giấy vệ sinh' },
+  { ma_sp: 'HD',   ten_sp: 'Hóa đơn',                    doc: true }, // tài liệu, không tính thùng
+  { ma_sp: 'HDPL', ten_sp: 'Hợp đồng/phụ lục Hợp đồng', doc: true }, // tài liệu, không tính thùng
 ];
 
 // B2B: Ream ÷ 5, làm tròn lên → thùng
@@ -56,7 +58,7 @@ export default function PhieuForm() {
   const [nguoiNhanList, setNguoiNhanList] = useState([newNguoiNhan()]);
 
   // ── Sản phẩm: { A3, A4, VO, GVS } — giá trị nhập (thùng với MT/GT, ream với B2B)
-  const [sanPham, setSanPham] = useState({ A3: '', A4: '', VO: '', GVS: '' });
+  const [sanPham, setSanPham] = useState({ A3: '', A4: '', VO: '', GVS: '', HD: '', HDPL: '' });
 
   // ── Dữ liệu tham chiếu ──
   const [danhSachKho,       setDanhSachKho]       = useState([]);
@@ -140,12 +142,12 @@ export default function PhieuForm() {
       .filter(sp => parseFloat(sanPham[sp.ma_sp]) > 0)
       .map(sp => {
         const raw   = parseFloat(sanPham[sp.ma_sp]) || 0;
-        const thung = isB2B ? reamToThung(raw) : raw;
+        const thung = sp.doc ? raw : (isB2B ? reamToThung(raw) : raw); // tài liệu không quy đổi thùng
         return { ma_sp: sp.ma_sp, ten_sp: sp.ten_sp, so_luong: raw, so_luong_thung: thung };
       });
   };
 
-  const tongThung = SP_LIST.reduce((sum, sp) => {
+  const tongThung = SP_LIST.filter(sp => !sp.doc).reduce((sum, sp) => {
     const raw = parseFloat(sanPham[sp.ma_sp]) || 0;
     return sum + (isB2B ? reamToThung(raw) : raw);
   }, 0);
@@ -288,7 +290,7 @@ export default function PhieuForm() {
             <div className="flex gap-2 max-w-xs">
               {['MT', 'GT', 'B2B'].map(bp => (
                 <button key={bp} type="button"
-                  onClick={() => { setField('bo_phan', bp); setSanPham({ A3:'', A4:'', VO:'', GVS:'' }); }}
+                  onClick={() => { setField('bo_phan', bp); setSanPham({ A3:'', A4:'', VO:'', GVS:'', HD:'', HDPL:'' }); }}
                   className={`flex-1 py-2.5 rounded-lg text-sm font-bold border-2 transition-colors
                     ${form.bo_phan === bp
                       ? bp === 'MT' ? 'bg-purple-600 text-white border-purple-600'
@@ -485,9 +487,11 @@ export default function PhieuForm() {
                           </td>
                           {isB2B && (
                             <td className="py-2 text-right">
-                              {parseFloat(val) > 0
-                                ? <span className="font-bold text-blue-700">{thung} thùng</span>
-                                : <span className="text-gray-300">—</span>
+                              {sp.doc
+                                ? <span className="text-gray-300">—</span>
+                                : parseFloat(val) > 0
+                                  ? <span className="font-bold text-blue-700">{thung} thùng</span>
+                                  : <span className="text-gray-300">—</span>
                               }
                             </td>
                           )}
