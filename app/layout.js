@@ -23,6 +23,7 @@ export default function RootLayout({ children }) {
               <Link href="/" className="text-gray-600 hover:text-blue-600 font-medium">📋 Nhập phiếu</Link>
               <Link href="/dieu-xe" className="text-gray-600 hover:text-blue-600 font-medium">🚚 Điều xe</Link>
               <Link href="/lich-su-dieu-xe" className="text-gray-600 hover:text-blue-600 font-medium">🗂 Lịch sử</Link>
+              <Link href="/nhien-lieu" className="text-gray-600 hover:text-blue-600 font-medium">⛽ Nhiên liệu</Link>
               <Link href="/import" className="text-gray-600 hover:text-blue-600 font-medium">📤 Import Excel</Link>
             </nav>
           </div>

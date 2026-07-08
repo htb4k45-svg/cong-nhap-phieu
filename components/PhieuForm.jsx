@@ -23,6 +23,7 @@ const SP_LIST = [
   { ma_sp: 'GVS',  ten_sp: 'Giấy vệ sinh' },
   { ma_sp: 'HD',   ten_sp: 'Hóa đơn',                    doc: true }, // tài liệu, không tính thùng
   { ma_sp: 'HDPL', ten_sp: 'Hợp đồng/phụ lục Hợp đồng', doc: true }, // tài liệu, không tính thùng
+  { ma_sp: 'HM',   ten_sp: 'Hàng mẫu/Báo giá',          doc: true }, // tài liệu, không tính thùng
 ];
 
 // B2B: Ream ÷ 5, làm tròn lên → thùng
@@ -58,7 +59,7 @@ export default function PhieuForm() {
   const [nguoiNhanList, setNguoiNhanList] = useState([newNguoiNhan()]);
 
   // ── Sản phẩm: { A3, A4, VO, GVS } — giá trị nhập (thùng với MT/GT, ream với B2B)
-  const [sanPham, setSanPham] = useState({ A3: '', A4: '', VO: '', GVS: '', HD: '', HDPL: '' });
+  const [sanPham, setSanPham] = useState({ A3: '', A4: '', VO: '', GVS: '', HD: '', HDPL: '', HM: '' });
 
   // ── Dữ liệu tham chiếu ──
   const [danhSachKho,       setDanhSachKho]       = useState([]);
