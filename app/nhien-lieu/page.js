@@ -204,20 +204,66 @@ export default function NhienLieuPage() {
   );
 }
 
+// ── Xuất CSV helper ──────────────────────────────────────────────────────────
+function toCSV(rows2d, filename) {
+  const csv = rows2d.map(r => r.map(c => `"${String(c ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+const DETAIL_HEADERS = [
+  ['Biển số',               false],
+  ['Ngày giao dịch',        false],
+  ['Tên tài xế',            false],
+  ['Đơn vị kinh doanh',     false],
+  ['Mặt hàng',              false],
+  ['Đơn vị',                false],
+  ['Số lít thực tế',        true],
+  ['Đơn giá chưa CK',       true],
+  ['Thành tiền chưa CK',    true],
+  ['Đơn giá có CK',         true],
+  ['Thành tiền có CK',      true],
+  ['Ký hiệu HĐ',            false],
+  ['Số hóa đơn',            false],
+  ['Ngày hóa đơn',          false],
+  ['Tên đơn vị bán',        false],
+  ['Mã số thuế ĐV bán',     false],
+];
+
+function detailRow(d, bien_so) {
+  return [
+    bien_so || d.bien_so || '',
+    fmtDateTime(d.ngay_gd), d.ten_tai_xe || '', d.don_vi_kd || '',
+    d.mat_hang || '', d.don_vi || '',
+    d.so_luong_lit ?? '',
+    d.gia_chua_ck ?? '', d.tien_hang_chua_ck ?? '',
+    d.gia_co_ck ?? '', d.tien_hang_co_ck ?? '',
+    d.ky_hieu_hd || '', d.so_hd || '', fmtDate(d.ngay_hd),
+    d.ten_dv_ban || '', d.mst_dv_ban || '',
+  ];
+}
+
 // ══════════════════════════════════════════════════════════
 // Tab 1: BÁO CÁO
 // ══════════════════════════════════════════════════════════
 function TabBaoCao() {
-  const [thang, setThang]         = useState(thisMonth());
-  const [data, setData]           = useState(null);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState(null);
-  const [selected, setSelected]   = useState(null); // biển số đang chọn
-  const [detail, setDetail]       = useState(null); // { bien_so, rows, summary_row }
-  const [detailLoading, setDL]    = useState(false);
+  const [thang, setThang]       = useState(thisMonth());
+  const [data, setData]         = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState(null);
+  // expanded: biển số đang xổ chi tiết (inline)
+  const [expanded, setExpanded] = useState(null);
+  // detailCache: { [bien_so]: { rows, loading } }
+  const [cache, setCache]       = useState({});
+  // checked: Set of bien_so được tick chọn
+  const [checked, setChecked]   = useState(new Set());
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true); setError(null); setSelected(null); setDetail(null);
+    setLoading(true); setError(null); setExpanded(null); setCache({}); setChecked(new Set());
     try {
       const res  = await fetch(`/api/nhien-lieu/bao-cao?thang=${thang}`);
       const json = await res.json();
@@ -229,48 +275,105 @@ function TabBaoCao() {
 
   useEffect(() => { load(); }, [load]);
 
-  const selectXe = async (bien_so, summaryRow) => {
-    if (selected === bien_so) { setSelected(null); setDetail(null); return; }
-    setSelected(bien_so);
-    setDL(true);
+  // Mở/đóng chi tiết inline cho 1 xe
+  const toggleExpand = async (bien_so) => {
+    if (expanded === bien_so) { setExpanded(null); return; }
+    setExpanded(bien_so);
+    if (cache[bien_so]) return; // đã cache
+    setCache(c => ({ ...c, [bien_so]: { rows: null, loading: true } }));
     try {
       const res  = await fetch(`/api/nhien-lieu/bao-cao?thang=${thang}&bien_so=${encodeURIComponent(bien_so)}`);
       const json = await res.json();
-      setDetail({ bien_so, rows: json.detail || [], summary_row: summaryRow });
-    } catch { setDetail({ bien_so, rows: [], summary_row: summaryRow }); }
-    setDL(false);
+      setCache(c => ({ ...c, [bien_so]: { rows: json.detail || [], loading: false } }));
+    } catch {
+      setCache(c => ({ ...c, [bien_so]: { rows: [], loading: false } }));
+    }
   };
 
-  // Xuất CSV tổng hợp (tất cả xe)
-  const exportSummaryCSV = () => {
-    if (!data?.rows?.length) return;
+  // Checkbox toggle
+  const toggleCheck = (e, bien_so) => {
+    e.stopPropagation();
+    setChecked(prev => {
+      const next = new Set(prev);
+      next.has(bien_so) ? next.delete(bien_so) : next.add(bien_so);
+      return next;
+    });
+  };
+
+  const toggleAll = (e) => {
+    if (!data?.rows) return;
+    if (checked.size === data.rows.length) setChecked(new Set());
+    else setChecked(new Set(data.rows.map(r => r.bien_so)));
+  };
+
+  // Xuất CSV tổng hợp (các xe đã check, hoặc tất cả)
+  const exportSummary = (subset) => {
+    const rows = subset ? data.rows.filter(r => checked.has(r.bien_so)) : data.rows;
+    if (!rows?.length) return;
     const headers = ['Biển số','Tải trọng','ĐM (l/100km)','Km đầu','Km cuối','Km thực','Tồn đầu (l)','Lít đổ','Tồn cuối (l)','Lít tiêu thụ','ĐM tổng lít','TH thực (l/100km)','Chênh lệch','Tiền hàng','Tổng DT','Trạng thái'];
-    const rows = data.rows.map(r => [
+    const data2d = rows.map(r => [
       r.bien_so, r.tai_trong, r.dinh_muc ?? '', r.km_dau ?? '', r.km_cuoi ?? '', r.km_thuc,
       r.ton_dau, r.lit_do, r.ton_cuoi, r.lit_tieu_thu, r.dm_tong_lit ?? '',
       r.tieu_hao_thuc ?? '', r.chenh_lech ?? '', r.tien_hang, r.tong_dt,
       r.vuot_dm ? 'VƯỢT ĐM' : '',
     ]);
-    toCSV([headers, ...rows], `tong-hop-nhien-lieu_${thang}.csv`);
+    toCSV([headers, ...data2d], `tong-hop-nhien-lieu_${thang}.csv`);
   };
+
+  // Xuất CSV chi tiết giao dịch cho các xe đã check
+  const exportCheckedDetail = async () => {
+    if (!checked.size) return;
+    setExporting(true);
+    const plates = [...checked];
+    // Fetch detail cho xe chưa có trong cache
+    const toFetch = plates.filter(bs => !cache[bs]);
+    await Promise.all(toFetch.map(async bs => {
+      const res  = await fetch(`/api/nhien-lieu/bao-cao?thang=${thang}&bien_so=${encodeURIComponent(bs)}`);
+      const json = await res.json();
+      setCache(c => ({ ...c, [bs]: { rows: json.detail || [], loading: false } }));
+      return { bs, rows: json.detail || [] };
+    }));
+    // Lấy từ cache (sau khi fetch xong)
+    const allRows = [];
+    for (const bs of plates) {
+      const rows = cache[bs]?.rows || [];
+      for (const d of rows) allRows.push(detailRow(d, bs));
+    }
+    toCSV([DETAIL_HEADERS.map(([h]) => h), ...allRows], `chi-tiet-nhien-lieu_${thang}.csv`);
+    setExporting(false);
+  };
+
+  const nChecked = checked.size;
+  const allChecked = data?.rows?.length > 0 && checked.size === data.rows.length;
 
   return (
     <div>
       {/* Bộ lọc */}
-      <div style={{ ...card, display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <div style={{ ...card, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <div>
           <label style={{ fontSize: 12, color: '#64748b', display: 'block', marginBottom: 4 }}>Tháng</label>
           <input type="month" value={thang} onChange={e => setThang(e.target.value)} style={input} />
         </div>
         <button onClick={load} style={btn()}>Tải báo cáo</button>
-        <button onClick={exportSummaryCSV} disabled={!data?.rows?.length}
-          style={{ ...btn('#059669'), opacity: data?.rows?.length ? 1 : 0.4 }}>
-          ⬇ Xuất CSV tổng hợp
+        <button onClick={() => exportSummary(false)} disabled={!data?.rows?.length}
+          style={{ ...btn('#475569'), opacity: data?.rows?.length ? 1 : 0.4 }}>
+          ⬇ Xuất tổng hợp (tất cả)
         </button>
-        {selected && (
-          <span style={{ fontSize: 13, color: '#64748b', alignSelf: 'center' }}>
-            Đang xem: <b style={{ color: '#2563eb' }}>{selected}</b> — bấm lại để bỏ chọn
-          </span>
+        {nChecked > 0 && (
+          <>
+            <button onClick={() => exportSummary(true)}
+              style={btn('#7c3aed')}>
+              ⬇ Tổng hợp ({nChecked} xe)
+            </button>
+            <button onClick={exportCheckedDetail} disabled={exporting}
+              style={{ ...btn('#059669'), opacity: exporting ? 0.6 : 1 }}>
+              {exporting ? 'Đang xuất...' : `⬇ Chi tiết GD (${nChecked} xe)`}
+            </button>
+            <button onClick={() => setChecked(new Set())}
+              style={{ ...btn('#94a3b8') }}>
+              Bỏ chọn
+            </button>
+          </>
         )}
       </div>
 
@@ -295,206 +398,168 @@ function TabBaoCao() {
             ))}
           </div>
 
-          {/* Bảng tổng hợp — click chọn xe */}
-          <div style={{ ...card, padding: 0, overflow: 'hidden', marginBottom: 16 }}>
-            <div style={{ padding: '10px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#64748b' }}>
-              Bấm vào xe để xem báo cáo chi tiết
+          {/* Bảng tổng hợp */}
+          <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+            <div style={{ padding: '8px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#64748b', display: 'flex', gap: 12, alignItems: 'center' }}>
+              <span>☑ Tick chọn xe → xuất CSV. Bấm vào hàng để xem chi tiết giao dịch ngay bên dưới.</span>
+              {nChecked > 0 && <span style={{ color: '#7c3aed', fontWeight: 600 }}>Đã chọn {nChecked} xe</span>}
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e2e8f0' }}>
+                    <th style={{ padding: '8px 10px', width: 36 }}>
+                      <input type="checkbox" checked={allChecked} onChange={toggleAll} style={{ cursor: 'pointer' }} />
+                    </th>
                     {[
                       'Biển số','Tải trọng','ĐM (l/100km)','Km đầu','Km cuối','Km thực',
                       'Tồn đầu (l)','Lít đổ','Tồn cuối (l)','Lít tiêu thụ',
                       'ĐM tổng lít','TH thực (l/100km)','Chênh lệch',
                       'Tiền hàng','Tổng DT','',
                     ].map((h, i) => (
-                      <th key={i} style={{ padding: '8px 8px', textAlign: i >= 2 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap', fontSize: 11 }}>{h}</th>
+                      <th key={i} style={{ padding: '8px 6px', textAlign: i >= 2 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap', fontSize: 11 }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {(data.rows || []).map(r => {
-                    const isSel = selected === r.bien_so;
+                    const isExp  = expanded === r.bien_so;
+                    const isCk   = checked.has(r.bien_so);
+                    const det    = cache[r.bien_so];
                     return (
-                      <tr key={r.bien_so} onClick={() => selectXe(r.bien_so, r)}
-                        style={{
-                          borderBottom: '1px solid #f1f5f9', cursor: 'pointer', transition: 'background .1s',
-                          background: isSel ? '#dbeafe' : r.vuot_dm ? '#fff7f7' : 'white',
-                          outline: isSel ? '2px solid #2563eb' : 'none',
-                        }}>
-                        <td style={{ padding: '7px 8px', fontWeight: 700, color: isSel ? '#1d4ed8' : '#2563eb' }}>{r.bien_so}</td>
-                        <td style={{ padding: '7px 8px', color: '#64748b' }}>{r.tai_trong}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right' }}>{r.dinh_muc ?? '—'}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right' }}>{fmtNum(r.km_dau)}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right' }}>{fmtNum(r.km_cuoi)}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(r.km_thuc)}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', color: '#64748b' }}>{fmtNum(r.ton_dau, 1)}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', color: '#7c3aed', fontWeight: 600 }}>{fmtNum(r.lit_do, 1)}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', color: '#64748b' }}>{fmtNum(r.ton_cuoi, 1)}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', fontWeight: 700 }}>{fmtNum(r.lit_tieu_thu, 1)}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', color: '#64748b' }}>{r.dm_tong_lit != null ? fmtNum(r.dm_tong_lit, 1) : '—'}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', fontWeight: 700, color: r.vuot_dm ? '#dc2626' : (r.tieu_hao_thuc != null ? '#059669' : '#94a3b8') }}>
-                          {r.tieu_hao_thuc != null ? fmtNum(r.tieu_hao_thuc, 1) : '—'}
-                        </td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', fontWeight: 600, color: r.vuot_dm ? '#dc2626' : (r.chenh_lech != null && r.chenh_lech < 0 ? '#059669' : '#94a3b8') }}>
-                          {r.chenh_lech != null ? (r.chenh_lech > 0 ? `+${fmtNum(r.chenh_lech, 1)}` : fmtNum(r.chenh_lech, 1)) : '—'}
-                        </td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right' }}>{fmtNum(r.tien_hang)}</td>
-                        <td style={{ padding: '7px 8px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(r.tong_dt)}</td>
-                        <td style={{ padding: '7px 8px', whiteSpace: 'nowrap' }}>
-                          {r.vuot_dm && <span style={{ padding: '2px 6px', background: '#fee2e2', color: '#dc2626', borderRadius: 10, fontSize: 10, fontWeight: 700, marginRight: 4 }}>VƯỢT ĐM</span>}
-                          <span style={{ color: isSel ? '#1d4ed8' : '#94a3b8', fontSize: 11 }}>{isSel ? '◀ đang xem' : '▶'}</span>
-                        </td>
-                      </tr>
+                      <>
+                        <tr key={r.bien_so}
+                          onClick={() => toggleExpand(r.bien_so)}
+                          style={{
+                            borderBottom: isExp ? 'none' : '1px solid #f1f5f9',
+                            cursor: 'pointer',
+                            background: isExp ? '#dbeafe' : isCk ? '#f5f3ff' : r.vuot_dm ? '#fff7f7' : 'white',
+                          }}>
+                          <td style={{ padding: '7px 10px' }} onClick={e => e.stopPropagation()}>
+                            <input type="checkbox" checked={isCk} onChange={e => toggleCheck(e, r.bien_so)} style={{ cursor: 'pointer' }} />
+                          </td>
+                          <td style={{ padding: '7px 6px', fontWeight: 700, color: isExp ? '#1d4ed8' : '#2563eb' }}>{r.bien_so}</td>
+                          <td style={{ padding: '7px 6px', color: '#64748b' }}>{r.tai_trong}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right' }}>{r.dinh_muc ?? '—'}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right' }}>{fmtNum(r.km_dau)}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right' }}>{fmtNum(r.km_cuoi)}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(r.km_thuc)}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', color: '#64748b' }}>{fmtNum(r.ton_dau, 1)}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', color: '#7c3aed', fontWeight: 600 }}>{fmtNum(r.lit_do, 1)}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', color: '#64748b' }}>{fmtNum(r.ton_cuoi, 1)}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 700 }}>{fmtNum(r.lit_tieu_thu, 1)}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', color: '#64748b' }}>{r.dm_tong_lit != null ? fmtNum(r.dm_tong_lit, 1) : '—'}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 700, color: r.vuot_dm ? '#dc2626' : (r.tieu_hao_thuc != null ? '#059669' : '#94a3b8') }}>
+                            {r.tieu_hao_thuc != null ? fmtNum(r.tieu_hao_thuc, 1) : '—'}
+                          </td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 600, color: r.vuot_dm ? '#dc2626' : (r.chenh_lech != null && r.chenh_lech < 0 ? '#059669' : '#94a3b8') }}>
+                            {r.chenh_lech != null ? (r.chenh_lech > 0 ? `+${fmtNum(r.chenh_lech, 1)}` : fmtNum(r.chenh_lech, 1)) : '—'}
+                          </td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right' }}>{fmtNum(r.tien_hang)}</td>
+                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(r.tong_dt)}</td>
+                          <td style={{ padding: '7px 6px', whiteSpace: 'nowrap' }}>
+                            {r.vuot_dm && <span style={{ padding: '2px 5px', background: '#fee2e2', color: '#dc2626', borderRadius: 8, fontSize: 10, fontWeight: 700, marginRight: 4 }}>VƯỢT ĐM</span>}
+                            <span style={{ color: isExp ? '#1d4ed8' : '#94a3b8', fontSize: 11 }}>{isExp ? '▲' : '▼'}</span>
+                          </td>
+                        </tr>
+
+                        {/* ── Inline detail row ── */}
+                        {isExp && (
+                          <tr key={r.bien_so + '_det'}>
+                            <td colSpan={17} style={{ padding: 0, background: '#f0f7ff', borderBottom: '2px solid #2563eb' }}>
+                              <InlineDetail summaryRow={r} det={det} thang={thang} />
+                            </td>
+                          </tr>
+                        )}
+                      </>
                     );
                   })}
                 </tbody>
               </table>
             </div>
           </div>
-
-          {/* Panel báo cáo chi tiết từng xe */}
-          {selected && (
-            <DetailPanel
-              thang={thang}
-              summaryRow={detail?.summary_row}
-              rows={detail?.rows || []}
-              loading={detailLoading}
-              onClose={() => { setSelected(null); setDetail(null); }}
-            />
-          )}
         </>
       )}
     </div>
   );
 }
 
-// ── Xuất CSV helper ──────────────────────────────────────────────────────────
-function toCSV(rows2d, filename) {
-  const csv = rows2d.map(r => r.map(c => `"${String(c ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
-}
+// ── Inline detail bên trong table ────────────────────────────────────────────
+function InlineDetail({ summaryRow: r, det, thang }) {
+  const rows = det?.rows || [];
+  const isLoading = det?.loading !== false;
 
-// ── Panel chi tiết 1 xe ──────────────────────────────────────────────────────
-function DetailPanel({ thang, summaryRow: r, rows, loading, onClose }) {
-  const exportDetail = () => {
-    if (!rows?.length) return;
-    const headers = [
-      'Ngày giao dịch','Tên tài xế','Đơn vị kinh doanh','Mặt hàng','Đơn vị',
-      'Số lít thực tế',
-      'Đơn giá chưa CK','Thành tiền chưa CK','Thuế GTGT (chưa CK)','Tổng DT chưa CK',
-      'Đơn giá có CK','Thành tiền có CK','Thuế GTGT (có CK)','Tổng DT có CK',
-      'Ký hiệu HĐ','Số hóa đơn','Ngày hóa đơn',
-      'Tên đơn vị bán','Mã số thuế ĐV bán',
-    ];
-    const data = rows.map(d => [
-      fmtDateTime(d.ngay_gd), d.ten_tai_xe || '', d.don_vi_kd || '', d.mat_hang || '', d.don_vi || '',
-      d.so_luong_lit ?? '',
-      d.gia_chua_ck ?? '', d.tien_hang_chua_ck ?? '', d.thue_gtgt_chua_ck ?? '', d.tong_dt_chua_ck ?? '',
-      d.gia_co_ck ?? '', d.tien_hang_co_ck ?? '', d.thue_gtgt_co_ck ?? '', d.tong_dt_co_ck ?? '',
-      d.ky_hieu_hd || '', d.so_hd || '', fmtDate(d.ngay_hd),
-      d.ten_dv_ban || '', d.mst_dv_ban || '',
-    ]);
-    toCSV([headers, ...data], `chi-tiet-xe_${r?.bien_so || 'xe'}_${thang}.csv`);
+  const exportThis = () => {
+    if (!rows.length) return;
+    toCSV([DETAIL_HEADERS.map(([h]) => h), ...rows.map(d => detailRow(d, r.bien_so))],
+          `chi-tiet-xe_${r.bien_so}_${thang}.csv`);
   };
 
   return (
-    <div style={{ ...card, padding: 0, overflow: 'hidden', border: '2px solid #2563eb' }}>
-      {/* Header panel */}
-      <div style={{ padding: '12px 16px', background: '#1e40af', color: 'white', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-        <div style={{ fontWeight: 700, fontSize: 16 }}>🚗 {r?.bien_so || '...'}</div>
-        {r && (
-          <>
-            <div style={{ fontSize: 13, opacity: .85 }}>{r.tai_trong}</div>
-            <div style={{ fontSize: 13 }}>Km: <b>{fmtNum(r.km_dau)} → {fmtNum(r.km_cuoi)}</b> ({fmtNum(r.km_thuc)} km)</div>
-            <div style={{ fontSize: 13 }}>Lít đổ: <b>{fmtNum(r.lit_do, 1)}</b> | Tiêu thụ: <b>{fmtNum(r.lit_tieu_thu, 1)}</b></div>
-            {r.tieu_hao_thuc != null && (
-              <div style={{ fontSize: 13 }}>
-                TH thực: <b style={{ color: r.vuot_dm ? '#fca5a5' : '#86efac' }}>{fmtNum(r.tieu_hao_thuc, 1)} l/100km</b>
-                {r.dinh_muc && <span style={{ opacity: .7 }}> (ĐM: {r.dinh_muc})</span>}
-                {r.vuot_dm && <span style={{ marginLeft: 8, padding: '1px 8px', background: '#dc2626', borderRadius: 10, fontSize: 11, fontWeight: 700 }}>VƯỢT ĐM +{fmtNum(r.chenh_lech, 1)}</span>}
-              </div>
-            )}
-          </>
+    <div>
+      {/* Mini header */}
+      <div style={{ padding: '8px 16px', background: '#1e40af', color: 'white', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 700, fontSize: 14 }}>🚗 {r.bien_so}</span>
+        <span style={{ fontSize: 12, opacity: .8 }}>{r.tai_trong}</span>
+        <span style={{ fontSize: 12 }}>Km: <b>{fmtNum(r.km_dau)} → {fmtNum(r.km_cuoi)}</b> ({fmtNum(r.km_thuc)} km)</span>
+        <span style={{ fontSize: 12 }}>Lít đổ: <b>{fmtNum(r.lit_do, 1)}</b> | Tiêu thụ: <b>{fmtNum(r.lit_tieu_thu, 1)} l</b></span>
+        {r.tieu_hao_thuc != null && (
+          <span style={{ fontSize: 12 }}>
+            TH thực: <b style={{ color: r.vuot_dm ? '#fca5a5' : '#86efac' }}>{fmtNum(r.tieu_hao_thuc, 1)} l/100km</b>
+            {r.dinh_muc && <span style={{ opacity: .7 }}> / ĐM {r.dinh_muc}</span>}
+            {r.vuot_dm && <span style={{ marginLeft: 6, padding: '1px 7px', background: '#dc2626', borderRadius: 8, fontSize: 10, fontWeight: 700 }}>VƯỢT ĐM +{fmtNum(r.chenh_lech, 1)}</span>}
+          </span>
         )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button onClick={exportDetail} disabled={!rows?.length}
-            style={{ padding: '6px 14px', background: '#059669', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, opacity: rows?.length ? 1 : 0.5 }}>
-            ⬇ Xuất CSV xe này
-          </button>
-          <button onClick={onClose}
-            style={{ padding: '6px 12px', background: 'rgba(255,255,255,.2)', color: 'white', border: '1px solid rgba(255,255,255,.4)', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
-            ✕ Đóng
-          </button>
-        </div>
+        <button onClick={exportThis} disabled={!rows.length || isLoading}
+          style={{ marginLeft: 'auto', padding: '4px 12px', background: '#059669', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600, opacity: rows.length ? 1 : 0.5 }}>
+          ⬇ Xuất CSV xe này
+        </button>
       </div>
 
-      {loading && <div style={{ padding: 32, textAlign: 'center', color: '#64748b' }}>Đang tải giao dịch...</div>}
+      {isLoading && <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: 13 }}>Đang tải giao dịch...</div>}
 
-      {!loading && (
-        <div style={{ overflowX: 'auto' }}>
-          {!rows?.length
-            ? <div style={{ padding: 24, color: '#94a3b8', textAlign: 'center' }}>Không có giao dịch trong tháng này</div>
+      {!isLoading && (
+        <div style={{ overflowX: 'auto', maxHeight: 340 }}>
+          {!rows.length
+            ? <div style={{ padding: 20, color: '#94a3b8', textAlign: 'center', fontSize: 13 }}>Không có giao dịch</div>
             : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                <thead>
+                <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
                   <tr style={{ background: '#eff6ff', borderBottom: '2px solid #bfdbfe' }}>
-                    {[
-                      ['Ngày giao dịch',       false],
-                      ['Tên tài xế',            false],
-                      ['Đơn vị kinh doanh',     false],
-                      ['Mặt hàng',              false],
-                      ['Đơn vị',                false],
-                      ['Số lít thực tế',        true],
-                      ['Đơn giá chưa CK',       true],
-                      ['Thành tiền chưa CK',    true],
-                      ['Đơn giá có CK',         true],
-                      ['Thành tiền có CK',      true],
-                      ['Ký hiệu HĐ',            false],
-                      ['Số hóa đơn',            false],
-                      ['Ngày hóa đơn',          false],
-                      ['Tên đơn vị bán',        false],
-                      ['Mã số thuế ĐV bán',     false],
-                    ].map(([h, right], i) => (
-                      <th key={i} style={{ padding: '7px 8px', textAlign: right ? 'right' : 'left', fontWeight: 600, color: '#1e40af', whiteSpace: 'nowrap' }}>{h}</th>
+                    {DETAIL_HEADERS.slice(1).map(([h, right], i) => (
+                      <th key={i} style={{ padding: '6px 8px', textAlign: right ? 'right' : 'left', fontWeight: 600, color: '#1e40af', whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((d, i) => (
                     <tr key={i} style={{ borderBottom: '1px solid #dbeafe', background: i % 2 === 0 ? 'white' : '#f0f7ff' }}>
-                      <td style={{ padding: '5px 8px', whiteSpace: 'nowrap' }}>{fmtDateTime(d.ngay_gd)}</td>
-                      <td style={{ padding: '5px 8px', whiteSpace: 'nowrap' }}>{d.ten_tai_xe || '—'}</td>
-                      <td style={{ padding: '5px 8px', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.don_vi_kd || '—'}</td>
-                      <td style={{ padding: '5px 8px', whiteSpace: 'nowrap' }}>{d.mat_hang || '—'}</td>
-                      <td style={{ padding: '5px 8px' }}>{d.don_vi || '—'}</td>
-                      <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: '#7c3aed' }}>{fmtNum(d.so_luong_lit, 1)}</td>
-                      <td style={{ padding: '5px 8px', textAlign: 'right', color: '#64748b' }}>{fmtNum(d.gia_chua_ck)}</td>
-                      <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmtNum(d.tien_hang_chua_ck)}</td>
-                      <td style={{ padding: '5px 8px', textAlign: 'right', color: '#64748b' }}>{fmtNum(d.gia_co_ck)}</td>
-                      <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(d.tien_hang_co_ck)}</td>
-                      <td style={{ padding: '5px 8px' }}>{d.ky_hieu_hd || '—'}</td>
-                      <td style={{ padding: '5px 8px' }}>{d.so_hd || '—'}</td>
-                      <td style={{ padding: '5px 8px', whiteSpace: 'nowrap' }}>{fmtDate(d.ngay_hd)}</td>
-                      <td style={{ padding: '5px 8px', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.ten_dv_ban || '—'}</td>
-                      <td style={{ padding: '5px 8px' }}>{d.mst_dv_ban || '—'}</td>
+                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{fmtDateTime(d.ngay_gd)}</td>
+                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{d.ten_tai_xe || '—'}</td>
+                      <td style={{ padding: '4px 8px', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.don_vi_kd || '—'}</td>
+                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{d.mat_hang || '—'}</td>
+                      <td style={{ padding: '4px 8px' }}>{d.don_vi || '—'}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 700, color: '#7c3aed' }}>{fmtNum(d.so_luong_lit, 1)}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{fmtNum(d.gia_chua_ck)}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmtNum(d.tien_hang_chua_ck)}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{fmtNum(d.gia_co_ck)}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(d.tien_hang_co_ck)}</td>
+                      <td style={{ padding: '4px 8px' }}>{d.ky_hieu_hd || '—'}</td>
+                      <td style={{ padding: '4px 8px' }}>{d.so_hd || '—'}</td>
+                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{fmtDate(d.ngay_hd)}</td>
+                      <td style={{ padding: '4px 8px', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.ten_dv_ban || '—'}</td>
+                      <td style={{ padding: '4px 8px' }}>{d.mst_dv_ban || '—'}</td>
                     </tr>
                   ))}
-                  {/* Dòng tổng cộng */}
-                  <tr style={{ background: '#dbeafe', borderTop: '2px solid #93c5fd', fontWeight: 700 }}>
-                    <td colSpan={5} style={{ padding: '6px 8px', fontSize: 12, color: '#1e40af' }}>TỔNG CỘNG ({rows.length} giao dịch)</td>
-                    <td style={{ padding: '6px 8px', textAlign: 'right', color: '#7c3aed' }}>{fmtNum(rows.reduce((s,d) => s+(d.so_luong_lit||0),0), 1)}</td>
-                    <td colSpan={1} style={{ padding: '6px 8px' }}></td>
-                    <td style={{ padding: '6px 8px', textAlign: 'right' }}>{fmtNum(rows.reduce((s,d) => s+(d.tien_hang_chua_ck||0),0))}</td>
-                    <td colSpan={1} style={{ padding: '6px 8px' }}></td>
-                    <td style={{ padding: '6px 8px', textAlign: 'right' }}>{fmtNum(rows.reduce((s,d) => s+(d.tien_hang_co_ck||0),0))}</td>
-                    <td colSpan={5} style={{ padding: '6px 8px' }}></td>
+                  <tr style={{ background: '#dbeafe', borderTop: '2px solid #93c5fd', fontWeight: 700, fontSize: 11 }}>
+                    <td colSpan={4} style={{ padding: '5px 8px', color: '#1e40af' }}>TỔNG ({rows.length} GD)</td>
+                    <td style={{ padding: '5px 8px' }}></td>
+                    <td style={{ padding: '5px 8px', textAlign: 'right', color: '#7c3aed' }}>{fmtNum(rows.reduce((s,d) => s+(d.so_luong_lit||0),0),1)}</td>
+                    <td style={{ padding: '5px 8px' }}></td>
+                    <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmtNum(rows.reduce((s,d) => s+(d.tien_hang_chua_ck||0),0))}</td>
+                    <td style={{ padding: '5px 8px' }}></td>
+                    <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmtNum(rows.reduce((s,d) => s+(d.tien_hang_co_ck||0),0))}</td>
+                    <td colSpan={5} style={{ padding: '5px 8px' }}></td>
                   </tr>
                 </tbody>
               </table>
