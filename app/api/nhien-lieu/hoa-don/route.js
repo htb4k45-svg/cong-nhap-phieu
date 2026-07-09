@@ -1,6 +1,28 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase';
 
+// GET /api/nhien-lieu/hoa-don?thang=YYYY-MM
+// Trả về tất cả hóa đơn trong tháng từ nhien_lieu_gd
+export async function GET(request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const thang = searchParams.get('thang');
+    if (!thang) return NextResponse.json({ error: 'Thiếu tham số thang' }, { status: 400 });
+
+    const supabase = createAdminClient();
+    const { data, error } = await supabase
+      .from('nhien_lieu_gd')
+      .select('id, bien_so, ten_tai_xe, mst_dv_ban, ten_dv_ban, ky_hieu_hd, so_hd, ngay_hd, so_luong_lit, tong_dt_co_ck, pdf_file, pdf_verified_at')
+      .eq('thang', thang)
+      .order('ngay_hd', { ascending: true });
+
+    if (error) throw error;
+    return NextResponse.json({ thang, records: data || [] });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
 /**
  * POST /api/nhien-lieu/hoa-don
  * Body: {

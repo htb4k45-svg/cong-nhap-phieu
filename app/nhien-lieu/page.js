@@ -919,13 +919,16 @@ function extractInvoiceFields(text, filename) {
 
   let ky_hieu_hd = mKy ? mKy[1].trim() : null;
   let so_hd      = mSo ? mSo[1].trim() : null;
+  let mst_file   = null;
 
-  // Fallback: phân tích từ tên file — pattern: MST-KyHieuSoHD.pdf
-  // Ví dụ: 0301444626-K26TDH12142.pdf → ky_hieu=K26TDH, so_hd=12142
-  if ((!so_hd || !ky_hieu_hd) && filename) {
+  // Fallback từ tên file: pattern MST-KyHieuSoHD.pdf
+  // Ví dụ: 0301444626-K26TDH12142.pdf
+  if (filename) {
     const stem  = filename.replace(/\.pdf$/i, '').split(/[\\/]/).pop();
     const parts = stem.split('-');
     if (parts.length >= 2) {
+      // phần đầu toàn số → MST
+      if (/^\d{8,13}$/.test(parts[0])) mst_file = parts[0];
       const suffix  = parts.slice(1).join('');
       const soMatch = suffix.match(/(\d+)$/);
       const kyMatch = suffix.match(/^([A-Z0-9\/]+?)(\d+)$/);
@@ -934,7 +937,7 @@ function extractInvoiceFields(text, filename) {
     }
   }
 
-  return { ky_hieu_hd, so_hd };
+  return { ky_hieu_hd, so_hd, mst_file };
 }
 
 function TagStatus({ matched }) {
@@ -944,154 +947,174 @@ function TagStatus({ matched }) {
 }
 
 function TabHoaDonPDF() {
+  const [thang,     setThang]    = useState(thisMonth());
   const [libsReady, setLibsReady] = useState(false);
-  const [libErr,    setLibErr]    = useState(null);
-  const [phase,     setPhase]     = useState('idle');
-  const [progress,  setProgress]  = useState('');
-  const [results,   setResults]   = useState([]);
-  const [blobUrls,  setBlobUrls]  = useState({});
-  const [summary,   setSummary]   = useState(null);
-  const [saved,     setSaved]     = useState(false);
-  const [saving,    setSaving]    = useState(false);
-  const [printing,  setPrinting]  = useState(false);
-  const [filter,    setFilter]    = useState('all');
+  const [libErr,    setLibErr]   = useState(null);
+  // DB records cho tháng được chọn
+  const [dbRecs,    setDbRecs]   = useState(null);  // null = chưa tải
+  const [dbLoading, setDbLoading] = useState(false);
+  // PDF upload state
+  const [phase,     setPhase]    = useState('idle');
+  const [progress,  setProgress] = useState('');
+  const [pdfMap,    setPdfMap]   = useState({}); // { key: blobUrl } key = ky_hieu|so_hd
+  const [saved,     setSaved]    = useState(false);
+  const [saving,    setSaving]   = useState(false);
+  const [printing,  setPrinting] = useState(false);
+  const [filter,    setFilter]   = useState('all');
 
+  // Load CDN scripts
   useEffect(() => {
-    return () => { Object.values(blobUrls).forEach(u => URL.revokeObjectURL(u)); };
-  }, [blobUrls]);
-
-  useEffect(() => {
-    Promise.all([
-      loadScript(CDN.JSZIP),
-      loadScript(CDN.PDFJS),
-      loadScript(CDN.PDFLIB),
-    ])
+    Promise.all([loadScript(CDN.JSZIP), loadScript(CDN.PDFJS), loadScript(CDN.PDFLIB)])
       .then(() => {
         if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.WORKER;
         setLibsReady(true);
       })
-      .catch(e => setLibErr('Khong tai duoc thu vien tu CDN: ' + e.message));
+      .catch(e => setLibErr('Khong tai duoc CDN: ' + e.message));
   }, []);
 
+  // Tải danh sách HĐ từ DB khi thang thay đổi
+  const loadDB = async (t) => {
+    setDbLoading(true); setDbRecs(null); setSaved(false);
+    try {
+      const res  = await fetch('/api/nhien-lieu/hoa-don?thang=' + t);
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      setDbRecs(json.records || []);
+    } catch (err) { setDbRecs([]); alert('Loi tai du lieu: ' + err.message); }
+    finally { setDbLoading(false); }
+  };
+
+  useEffect(() => { loadDB(thang); }, [thang]);
+
+  // Upload ZIP
   const handleFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-    setResults([]); setSummary(null); setSaved(false);
-    setBlobUrls(prev => { Object.values(prev).forEach(u => URL.revokeObjectURL(u)); return {}; });
+    // revoke old blob URLs
+    Object.values(pdfMap).forEach(u => URL.revokeObjectURL(u));
+    setPdfMap({}); setSaved(false);
+
     try {
       setPhase('extracting'); setProgress('Dang giai nen ZIP...');
       const pdfs = await extractAllPDFs(file);
-      if (!pdfs.length) throw new Error('Khong tim thay file PDF nao trong ZIP');
+      if (!pdfs.length) throw new Error('Khong tim thay PDF nao trong ZIP');
+
       setPhase('parsing');
-      const parsed = [];
+      const newMap = {};
       for (let i = 0; i < pdfs.length; i++) {
         setProgress('Doc PDF ' + (i+1) + '/' + pdfs.length + ': ' + pdfs[i].name);
         const text   = await extractPDFText(pdfs[i].data);
         const fields = extractInvoiceFields(text, pdfs[i].name);
-        parsed.push({ ...pdfs[i], ...fields });
+        const key    = (fields.ky_hieu_hd || '') + '|' + (fields.so_hd || '');
+        const blob   = new Blob([pdfs[i].data], { type: 'application/pdf' });
+        newMap[key]  = { url: URL.createObjectURL(blob), name: pdfs[i].name, ...fields, data: pdfs[i].data };
       }
-      const urls = {};
-      parsed.forEach(p => { urls[p.name] = URL.createObjectURL(new Blob([p.data], { type: 'application/pdf' })); });
-      setBlobUrls(urls);
-      setPhase('matching'); setProgress('Dang doi chieu voi du lieu PVOIL...');
-      const invoices = parsed.map(p => ({ ky_hieu_hd: p.ky_hieu_hd, so_hd: p.so_hd, pdf_file: p.name }));
-      const res  = await fetch('/api/nhien-lieu/hoa-don', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ invoices, save: false }),
-      });
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      const merged = json.results.map((r, i) => ({ ...r, data: parsed[i].data }));
-      setResults(merged);
-      setSummary(json.summary);
+      setPdfMap(newMap);
       setPhase('done'); setProgress('');
+
+      // Cập nhật DB: đánh dấu pdf_file cho các HĐ khớp
+      if (dbRecs && dbRecs.length) {
+        const toSave = [];
+        for (const rec of dbRecs) {
+          const key = (rec.ky_hieu_hd || '') + '|' + (rec.so_hd || '');
+          if (newMap[key]) toSave.push({ ky_hieu_hd: rec.ky_hieu_hd, so_hd: rec.so_hd, pdf_file: newMap[key].name });
+        }
+        if (toSave.length) {
+          await fetch('/api/nhien-lieu/hoa-don', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ invoices: toSave, save: true }),
+          });
+          await loadDB(thang); // reload để cập nhật pdf_file
+        }
+      }
     } catch (err) {
       setPhase('error'); setProgress(err.message);
     }
   };
 
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const invoices = results.map(r => ({ ky_hieu_hd: r.ky_hieu_hd, so_hd: r.so_hd, pdf_file: r.pdf_file }));
-      const res  = await fetch('/api/nhien-lieu/hoa-don', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ invoices, save: true }),
-      });
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setSaved(true);
-    } catch (err) {
-      alert('Loi luu: ' + err.message);
-    } finally { setSaving(false); }
+  const openPDF = (key) => {
+    const entry = pdfMap[key];
+    if (entry && entry.url) window.open(entry.url, '_blank');
   };
 
   const handlePrintAll = async () => {
-    const toPrint = results.filter(r => r.matched && r.data);
-    if (!toPrint.length) { alert('Khong co hoa don khop de in'); return; }
+    const matchedKeys = (dbRecs || [])
+      .map(r => (r.ky_hieu_hd || '') + '|' + (r.so_hd || ''))
+      .filter(k => pdfMap[k]);
+    if (!matchedKeys.length) { alert('Chua co PDF de in'); return; }
     setPrinting(true);
     try {
+      if (!window.PDFLib) throw new Error('pdf-lib chua san sang');
       const PDFDocument = window.PDFLib.PDFDocument;
-      const mergedDoc = await PDFDocument.create();
-      for (const r of toPrint) {
+      const mergedDoc   = await PDFDocument.create();
+      for (const key of matchedKeys) {
         try {
-          const doc   = await PDFDocument.load(r.data);
+          const buf   = pdfMap[key].data;
+          const doc   = await PDFDocument.load(buf);
           const pages = await mergedDoc.copyPages(doc, doc.getPageIndices());
           pages.forEach(p => mergedDoc.addPage(p));
         } catch (_) {}
       }
       const bytes = await mergedDoc.save();
-      const blob  = new Blob([bytes], { type: 'application/pdf' });
-      const url   = URL.createObjectURL(blob);
+      const url   = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
       const win   = window.open(url, '_blank');
-      if (win) win.onload = () => { win.focus(); win.print(); };
+      if (win) win.addEventListener('load', () => { win.focus(); win.print(); });
+      else alert('Trinh duyet da chan popup. Vui long cho phep popup va thu lai.');
     } catch (err) { alert('Loi in: ' + err.message); }
     finally { setPrinting(false); }
   };
 
-  const handlePrintOne = (r) => {
-    if (!r.data) return;
-    const blob = new Blob([r.data], { type: 'application/pdf' });
-    const url  = URL.createObjectURL(blob);
-    const win  = window.open(url, '_blank');
-    if (win) win.onload = () => { win.focus(); win.print(); };
-  };
+  // Thống kê
+  const total    = (dbRecs || []).length;
+  const matched  = (dbRecs || []).filter(r => pdfMap[(r.ky_hieu_hd||'')+'|'+(r.so_hd||'')]).length;
+  const displayed = filter === 'all'      ? (dbRecs || [])
+    : filter === 'matched'   ? (dbRecs || []).filter(r => pdfMap[(r.ky_hieu_hd||'')+'|'+(r.so_hd||'')])
+    : (dbRecs || []).filter(r => !pdfMap[(r.ky_hieu_hd||'')+'|'+(r.so_hd||'')]);
 
-  const displayed = filter === 'all' ? results
-    : filter === 'matched'   ? results.filter(r => r.matched)
-    : results.filter(r => !r.matched);
-
-  const isBusy = phase === 'extracting' || phase === 'parsing' || phase === 'matching';
+  const isBusy = phase === 'extracting' || phase === 'parsing';
 
   if (libErr) return <div style={{ ...card, color:'#dc2626' }}>{libErr}</div>;
 
   return (
     <div>
+      {/* Controls */}
       <div style={card}>
         <div style={{ display:'flex', alignItems:'flex-start', gap:16, flexWrap:'wrap' }}>
-          <div style={{ flex:1, minWidth:260 }}>
-            <div style={{ fontSize:14, fontWeight:700, color:'#1e293b', marginBottom:4 }}>
-              Upload file ZIP chua hoa don PDF
-            </div>
-            <div style={{ fontSize:12, color:'#64748b', lineHeight:1.6 }}>
-              Ho tro ZIP nhieu lop long nhau. Tu dong giai nen, doc text PDF,
-              trich Ky hieu va So, doi chieu du lieu PVOIL da import.
-            </div>
+          <div>
+            <label style={{ fontSize:12, color:'#64748b', display:'block', marginBottom:4 }}>Tháng</label>
+            <input type="month" value={thang} onChange={e => setThang(e.target.value)} style={input} />
           </div>
-          <label style={{
-            ...btn('#2563eb'), display:'inline-flex', alignItems:'center', gap:6, flexShrink:0,
-            opacity: (libsReady && !isBusy) ? 1 : 0.5,
-            cursor:  (libsReady && !isBusy) ? 'pointer' : 'not-allowed',
-          }}>
-            {!libsReady ? 'Dang tai thu vien...' : isBusy ? 'Dang xu ly...' : 'Chon file ZIP'}
-            <input type="file" accept=".zip" style={{ display:'none' }}
-              disabled={!libsReady || isBusy}
-              onChange={handleFile} />
-          </label>
+          <div style={{ flex:1, minWidth:220 }}>
+            <label style={{ fontSize:12, color:'#64748b', display:'block', marginBottom:4 }}>Upload ZIP hóa đơn PDF</label>
+            <label style={{
+              ...btn('#2563eb'), display:'inline-flex', alignItems:'center', gap:6,
+              opacity: (libsReady && !isBusy) ? 1 : 0.5,
+              cursor:  (libsReady && !isBusy) ? 'pointer' : 'not-allowed',
+            }}>
+              {!libsReady ? 'Dang tai thu vien...' : isBusy ? 'Dang xu ly...' : '📦 Chon file ZIP'}
+              <input type="file" accept=".zip" style={{ display:'none' }}
+                disabled={!libsReady || isBusy} onChange={handleFile} />
+            </label>
+          </div>
+          {dbRecs !== null && (
+            <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'flex-end' }}>
+              {Object.keys(pdfMap).length > 0 && (
+                <button onClick={handlePrintAll} disabled={printing}
+                  style={{ ...btn('#7c3aed'), padding:'8px 14px', fontSize:12 }}>
+                  {printing ? 'Dang in...' : 'In ' + matched + ' HD co PDF'}
+                </button>
+              )}
+              <button onClick={() => loadDB(thang)} disabled={dbLoading}
+                style={{ ...btn('#64748b'), padding:'8px 14px', fontSize:12 }}>
+                {dbLoading ? 'Dang tai...' : 'Tai lai'}
+              </button>
+            </div>
+          )}
         </div>
+
+        {/* Progress */}
         {phase !== 'idle' && phase !== 'done' && (
           <div style={{
             marginTop:12, padding:'10px 14px', borderRadius:6, fontSize:13,
@@ -1103,72 +1126,83 @@ function TabHoaDonPDF() {
         )}
       </div>
 
-      {phase === 'done' && summary && (
+      {/* Summary bar */}
+      {dbRecs !== null && (
         <div style={{ ...card, display:'flex', alignItems:'center', gap:20, flexWrap:'wrap' }}>
           <div style={{ display:'flex', gap:24 }}>
             {[
-              { v: summary.total,     c:'#1e293b', l:'Tong PDF' },
-              { v: summary.matched,   c:'#16a34a', l:'Khop' },
-              { v: summary.unmatched, c:'#dc2626', l:'Chua khop' },
-            ].map(function(x) { return (
+              { v: total,                      c:'#1e293b', l:'HĐ trong tháng' },
+              { v: matched,                    c:'#16a34a', l:'Có file PDF' },
+              { v: total - matched,            c:'#dc2626', l:'Chưa có PDF' },
+              { v: Object.keys(pdfMap).length, c:'#7c3aed', l:'PDF đã upload' },
+            ].map(x => (
               <div key={x.l} style={{ textAlign:'center' }}>
-                <div style={{ fontSize:26, fontWeight:800, color:x.c }}>{x.v}</div>
+                <div style={{ fontSize:22, fontWeight:800, color:x.c }}>{x.v}</div>
                 <div style={{ fontSize:11, color:'#64748b' }}>{x.l}</div>
               </div>
-            ); })}
+            ))}
           </div>
-          <div style={{ marginLeft:'auto', display:'flex', gap:8, flexWrap:'wrap' }}>
+          <div style={{ marginLeft:'auto', display:'flex', gap:6 }}>
             {['all','matched','unmatched'].map(f => (
               <button key={f} onClick={() => setFilter(f)}
-                style={{ ...btn(filter === f ? '#1e40af' : '#94a3b8'), padding:'6px 12px', fontSize:12 }}>
-                {f === 'all' ? 'Tat ca (' + summary.total + ')' : f === 'matched' ? 'Khop (' + summary.matched + ')' : 'Chua khop (' + summary.unmatched + ')'}
+                style={{ ...btn(filter === f ? '#1e40af' : '#94a3b8'), padding:'5px 12px', fontSize:12 }}>
+                {f === 'all' ? 'Tất cả' : f === 'matched' ? 'Có PDF' : 'Chưa có PDF'}
               </button>
             ))}
-            <button onClick={handlePrintAll} disabled={printing}
-              style={{ ...btn('#7c3aed'), padding:'6px 14px', fontSize:12 }}>
-              {printing ? 'Dang in...' : 'In ' + summary.matched + ' HD khop'}
-            </button>
-            <button onClick={handleSave} disabled={saving || saved}
-              style={{ ...btn(saved ? '#16a34a' : '#0891b2'), padding:'6px 14px', fontSize:12 }}>
-              {saved ? 'Da luu' : saving ? 'Dang luu...' : 'Luu vao DB'}
-            </button>
           </div>
         </div>
       )}
 
-      {displayed.length > 0 && (
+      {/* Bảng hóa đơn */}
+      {dbRecs !== null && displayed.length > 0 && (
         <div style={{ ...card, padding:0, overflow:'hidden' }}>
           <div style={{ overflowX:'auto' }}>
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
               <thead>
                 <tr style={{ background:'#f8fafc', borderBottom:'2px solid #e2e8f0' }}>
-                  {['#','Ten file PDF','Ky hieu HD','So HD','Trang thai','Bien so xe','Lai xe','So lit','Thang','In'].map(function(h,i) {
-                    return <th key={h} style={{ padding:'10px 12px', textAlign: i===7?'right':i===4||i===9?'center':'left', color:'#64748b', fontWeight:700, whiteSpace:'nowrap' }}>{h}</th>;
-                  })}
+                  {['#','MST ĐV xuất','Ký hiệu HĐ','Số HĐ','Biển số xe','Lái xe','Ngày HĐ','Số lít','File PDF','Xem / In'].map((h,i) => (
+                    <th key={h} style={{ padding:'10px 12px', textAlign: i===7?'right':'left', color:'#64748b', fontWeight:700, whiteSpace:'nowrap' }}>{h}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {displayed.map(function(r, i) {
+                {displayed.map((r, i) => {
+                  const key    = (r.ky_hieu_hd||'') + '|' + (r.so_hd||'');
+                  const pdfEntry = pdfMap[key];
                   return (
-                    <tr key={i} style={{ borderBottom:'1px solid #f1f5f9', background: r.matched ? 'white' : '#fff9f9' }}>
-                      <td style={{ padding:'8px 12px', color:'#9ca3af' }}>{i + 1}</td>
-                      <td style={{ padding:'8px 12px', fontFamily:'monospace', fontSize:11, maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={r.pdf_file}>
-                        {blobUrls[r.pdf_file]
-                          ? <a href={blobUrls[r.pdf_file]} target="_blank" rel="noreferrer"
-                              style={{ color:'#2563eb', textDecoration:'underline' }}>{r.pdf_file}</a>
-                          : r.pdf_file}
+                    <tr key={r.id} style={{ borderBottom:'1px solid #f1f5f9', background: pdfEntry ? '#f0fdf4' : 'white' }}>
+                      <td style={{ padding:'8px 12px', color:'#9ca3af' }}>{i+1}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:'monospace', fontSize:11 }}>{r.mst_dv_ban || '—'}</td>
+                      <td style={{ padding:'8px 12px', fontWeight:700, color:'#1e293b' }}>{r.ky_hieu_hd || '—'}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:'monospace', fontWeight:600 }}>{r.so_hd || '—'}</td>
+                      <td style={{ padding:'8px 12px', fontWeight:600, color:'#2563eb' }}>{r.bien_so || '—'}</td>
+                      <td style={{ padding:'8px 12px' }}>{r.ten_tai_xe || '—'}</td>
+                      <td style={{ padding:'8px 12px', color:'#64748b' }}>{fmtDate(r.ngay_hd)}</td>
+                      <td style={{ padding:'8px 12px', textAlign:'right' }}>{r.so_luong_lit != null ? fmtNum(r.so_luong_lit,2) : '—'}</td>
+                      <td style={{ padding:'8px 12px', fontSize:11, color: pdfEntry ? '#16a34a' : '#9ca3af' }}>
+                        {pdfEntry
+                          ? <span title={pdfEntry.name}>✅ {pdfEntry.name.length > 22 ? pdfEntry.name.slice(0,20)+'…' : pdfEntry.name}</span>
+                          : (r.pdf_file ? <span style={{ color:'#64748b' }}>📁 {r.pdf_file.slice(0,20)}</span> : '—')}
                       </td>
-                      <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.ky_hieu_hd || '—'}</td>
-                      <td style={{ padding:'8px 12px', fontFamily:'monospace' }}>{r.so_hd || '—'}</td>
-                      <td style={{ padding:'8px 12px', textAlign:'center' }}><TagStatus matched={r.matched} /></td>
-                      <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.record ? r.record.bien_so : '—'}</td>
-                      <td style={{ padding:'8px 12px' }}>{r.record ? r.record.ten_tai_xe : '—'}</td>
-                      <td style={{ padding:'8px 12px', textAlign:'right' }}>{r.record && r.record.so_luong_lit != null ? fmtNum(r.record.so_luong_lit, 2) : '—'}</td>
-                      <td style={{ padding:'8px 12px', color:'#64748b' }}>{r.record ? r.record.thang : '—'}</td>
-                      <td style={{ padding:'8px 12px', textAlign:'center' }}>
-                        {r.data && (
-                          <button onClick={() => handlePrintOne(r)}
-                            style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>In</button>
+                      <td style={{ padding:'8px 12px' }}>
+                        {pdfEntry && (
+                          <div style={{ display:'flex', gap:4 }}>
+                            <button onClick={() => openPDF(key)}
+                              style={{ ...btn('#2563eb'), padding:'3px 10px', fontSize:11 }}>🔍 Xem</button>
+                            <button onClick={async () => {
+                              try {
+                                const PDFDocument = window.PDFLib.PDFDocument;
+                                const doc   = await PDFDocument.load(pdfEntry.data);
+                                const merged = await PDFDocument.create();
+                                const pages = await merged.copyPages(doc, doc.getPageIndices());
+                                pages.forEach(p => merged.addPage(p));
+                                const bytes = await merged.save();
+                                const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+                                const win = window.open(url, '_blank');
+                                if (win) win.addEventListener('load', () => { win.focus(); win.print(); });
+                              } catch(err) { alert('Loi: ' + err.message); }
+                            }} style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>🖨</button>
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -1180,11 +1214,19 @@ function TabHoaDonPDF() {
         </div>
       )}
 
-      {phase === 'idle' && (
-        <div style={{ ...card, textAlign:'center', padding:56, color:'#94a3b8' }}>
-          <div style={{ fontSize:44, marginBottom:12 }}>📦</div>
-          <div style={{ fontSize:14, color:'#64748b' }}>Upload file ZIP de bat dau xu ly hoa don PDF</div>
-          <div style={{ fontSize:12, marginTop:6 }}>Ho tro ZIP nhieu lop long nhau · Tu dong trich Ky hieu va So · Doi chieu PVOIL</div>
+      {/* Loading */}
+      {dbLoading && (
+        <div style={{ ...card, textAlign:'center', padding:40, color:'#94a3b8' }}>
+          Đang tải danh sách hóa đơn tháng {thang}…
+        </div>
+      )}
+
+      {/* Empty */}
+      {dbRecs !== null && !dbLoading && dbRecs.length === 0 && (
+        <div style={{ ...card, textAlign:'center', padding:48, color:'#94a3b8' }}>
+          <div style={{ fontSize:36, marginBottom:8 }}>📭</div>
+          <div>Chưa có hóa đơn nào trong tháng {thang}</div>
+          <div style={{ fontSize:12, marginTop:4 }}>Import file PVOIL trước, sau đó upload ZIP hóa đơn PDF</div>
         </div>
       )}
     </div>
