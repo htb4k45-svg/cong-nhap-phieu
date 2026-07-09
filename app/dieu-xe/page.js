@@ -1239,18 +1239,18 @@ export default function DieuXePage() {
   // Stats theo driverList (nguồn chính xác) thay vì tên từ sheet
   const driverStats = useMemo(() => {
     const map = {};
-    for (const d of driverList) map[d.ten] = { cho:0, dang:0, da:0, total:0 };
+    for (const d of driverList) map[d.ten] = { cho:0, dang:0, total:0 };
     for (const p of phieuList) {
-      const s = statusMap[p.row_key];
       const lx = getLx(p);
       const gn = getGn(p);
       const tt = getTT(p);
+      // Đơn đã giao / đã hủy không còn trên xe — xe trắng trơn sau khi chốt
+      if (tt === 'da_giao' || tt === 'huy') continue;
       for (const name of [lx, gn]) {
         if (name && map[name]) {
           map[name].total++;
           if (tt === 'cho_giao')  map[name].cho++;
           if (tt === 'dang_giao') map[name].dang++;
-          if (tt === 'da_giao')   map[name].da++;
         }
       }
     }
@@ -1426,8 +1426,8 @@ export default function DieuXePage() {
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px,1fr))', gap:8 }}>
                     {drivers.map(function(dr) {
                         const name = dr.ten;
-                        const d    = driverStats[name] || { cho:0, dang:0, da:0, total:0 };
-                        const pct  = d.total ? Math.round(d.da / d.total * 100) : 0;
+                        const d    = driverStats[name] || { cho:0, dang:0, total:0 };
+                        const pct  = d.total ? Math.round(d.dang / d.total * 100) : 0;
                         const isActive = activeDriver === name;
                         const loadInfo = grp.showLoad ? capInfo(driverCapacity, driverLoad, name) : { parts: [], maxPct: 0 };
                         return (
@@ -1464,8 +1464,8 @@ export default function DieuXePage() {
                             <div style={{ display:'flex', gap:6, fontSize:11 }}>
                               <span style={{ color:'#2563eb' }}>⏳{d.cho}</span>
                               <span style={{ color:'#d97706' }}>🚚{d.dang}</span>
-                              <span style={{ color:'#059669' }}>✅{d.da}</span>
-                              <span style={{ marginLeft:'auto', color:'#9ca3af', fontWeight:600 }}>{pct}%</span>
+                              {d.total === 0 && <span style={{ color:'#10b981', fontWeight:600 }}>✓ Trống</span>}
+                              <span style={{ marginLeft:'auto', color:'#9ca3af', fontWeight:600 }}>{d.total > 0 ? `${d.total} đơn` : ''}</span>
                             </div>
                             {grp.showLoad && loadInfo.parts.map(function(part) {
                               const pPct   = Math.min(100, part.pct);
@@ -1485,7 +1485,8 @@ export default function DieuXePage() {
                             {grp.showLoad && d.total > 0 && (() => {
                               // Phụ xe hiện tại của route này
                               const drOrders = phieuList.filter(p => {
-                                const s = statusMap[p.row_key];
+                                const tt = getTT(p);
+                                if (tt === 'da_giao' || tt === 'huy') return false;
                                 return getLx(p) === name;
                               });
                               const currentGN = drOrders.length > 0
