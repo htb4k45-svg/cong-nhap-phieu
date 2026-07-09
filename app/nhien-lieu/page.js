@@ -1224,4 +1224,33 @@ function TabHoaDonPDF() {
                           <div style={{ display:'flex', gap:4 }}>
                             <button onClick={() => openPDF(key)}
                               style={{ ...btn('#2563eb'), padding:'3px 10px', fontSize:11 }}>🔍 Xem</button>
-   
+                            <button onClick={() => printSelected([key])}
+                              style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>🖨️ In</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Lưu vào DB */}
+        {Object.keys(pdfMap).length > 0 && dbRecs && dbRecs.some(r => pdfMap[(r.ky_hieu_hd||'')+'|'+normSoHD(r.so_hd)]) && (
+          <div style={{ marginTop:12, display:'flex', gap:8, alignItems:'center' }}>
+            <button
+              onClick={handleSave}
+              disabled={saved}
+              style={{ ...btn(saved ? '#6b7280' : '#16a34a') }}
+            >
+              {saved ? '✅ Đã lưu vào DB' : '💾 Lưu kết quả vào DB'}
+            </button>
+            {saved && <span style={{ color:'#16a34a', fontSize:13 }}>pdf_file đã được cập nhật cho các HĐ khớp</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
