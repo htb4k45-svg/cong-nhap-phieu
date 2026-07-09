@@ -1277,7 +1277,7 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
                       {r.ky_hieu_hd || '—'}
                     </td>
                     <td style={{ padding:'8px 12px', fontFamily:'monospace', fontWeight:600 }}>
-.so_hd || '—'}
+                      {r.so_hd || '—'}
                     </td>
                     <td style={{ padding:'8px 12px', fontWeight:600, color:'#2563eb' }}>
                       {r.bien_so || '—'}
