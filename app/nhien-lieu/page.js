@@ -840,7 +840,7 @@ function TabImportKm() {
                   <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700 }}>{fmtNum((r.km_cuoi||0)-(r.km_dau||0))}</td>
                   <td style={{ padding: '6px 10px', textAlign: 'right', color: '#7c3aed' }}>{r.dinh_muc_l_100km ?? '—'}</td>
                   <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_dau_lit ?? '—'}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_cuoi_lit ??
+                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_cuoi_lit ?? '—'}</td>
                 </tr>
               ))}
             </tbody>
