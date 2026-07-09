@@ -569,6 +569,7 @@ function InlineDetail({ summaryRow: r, det, thang, pdfMap = {} }) {
                     {DETAIL_HEADERS.slice(1).map(([h, right], i) => (
                       <th key={i} style={{ padding: '6px 8px', textAlign: right ? 'right' : 'left', fontWeight: 600, color: '#1e40af', whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
+                    <th style={{ padding: '6px 8px', fontWeight: 600, color: '#1e40af', whiteSpace: 'nowrap' }}>PDF</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -589,6 +590,36 @@ function InlineDetail({ summaryRow: r, det, thang, pdfMap = {} }) {
                       <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{fmtDate(d.ngay_hd)}</td>
                       <td style={{ padding: '4px 8px', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.ten_dv_ban || '—'}</td>
                       <td style={{ padding: '4px 8px' }}>{d.mst_dv_ban || '—'}</td>
+                      <td style={{ padding: '4px 8px' }}>
+                        {(() => {
+                          const k = (d.ky_hieu_hd || '') + '|' + normSoHD(d.so_hd);
+                          const e = pdfMap[k];
+                          return e ? (
+                            <div style={{ display:'flex', gap:3 }}>
+                              <button onClick={() => window.open(e.url, '_blank')}
+                                style={{ padding:'2px 7px', background:'#2563eb', color:'white', border:'none', borderRadius:4, cursor:'pointer', fontSize:10, fontWeight:600 }}>
+                                🔍
+                              </button>
+                              <button onClick={async () => {
+                                if (!window.PDFLib) return;
+                                const { PDFDocument } = window.PDFLib;
+                                const buf = await fetch(e.url).then(r => r.arrayBuffer());
+                                const doc = await PDFDocument.load(buf);
+                                const m = await PDFDocument.create();
+                                const pages = await m.copyPages(doc, doc.getPageIndices());
+                                pages.forEach(p => m.addPage(p));
+                                const bytes = await m.save();
+                                const url = URL.createObjectURL(new Blob([bytes], { type:'application/pdf' }));
+                                const w = window.open(url, '_blank');
+                                if (w) w.addEventListener('load', () => { w.focus(); w.print(); });
+                              }}
+                                style={{ padding:'2px 7px', background:'#7c3aed', color:'white', border:'none', borderRadius:4, cursor:'pointer', fontSize:10, fontWeight:600 }}>
+                                🖨️
+                              </button>
+                            </div>
+                          ) : null;
+                        })()}
+                      </td>
                     </tr>
                   ))}
                   <tr style={{ background: '#dbeafe', borderTop: '2px solid #93c5fd', fontWeight: 700, fontSize: 11 }}>
@@ -599,7 +630,7 @@ function InlineDetail({ summaryRow: r, det, thang, pdfMap = {} }) {
                     <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmtNum(rows.reduce((s,d) => s+(d.tien_hang_chua_ck||0),0))}</td>
                     <td style={{ padding: '5px 8px' }}></td>
                     <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmtNum(rows.reduce((s,d) => s+(d.tien_hang_co_ck||0),0))}</td>
-                    <td colSpan={5} style={{ padding: '5px 8px' }}></td>
+                    <td colSpan={6} style={{ padding: '5px 8px' }}></td>
                   </tr>
                 </tbody>
               </table>
@@ -1036,8 +1067,10 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
             try {
               const xmlText = await xmlEntry.async('string');
               const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-              ky_hieu_hd = doc.querySelector('KHHDon')?.textContent?.trim() || null;
-              so_hd      = doc.querySelector('SHDon')?.textContent?.trim()  || null;
+              // getElementsByTagName hoạt động đúng với XML có namespace (querySelector không)
+              ky_hieu_hd = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || null;
+              so_hd      = doc.getElementsByTagName('SHDon')[0]?.textContent?.trim()  || null;
+              console.log('[XML]', name, '→ KHHDon:', ky_hieu_hd, 'SHDon:', so_hd);
             } catch (xmlErr) {
               console.warn('XML parse error:', name, xmlErr);
             }
