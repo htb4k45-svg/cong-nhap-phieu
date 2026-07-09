@@ -949,7 +949,7 @@ function TabHoaDonPDF() {
         if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.WORKER;
         setLibsReady(true);
       })
-      .catch(e => setLibErr('Không tải được thư viện từ CDN: ' + e.message));
+      .catch(e => setLibErr('Khong tai duoc thu vien tu CDN: ' + e.message));
   }, []);
 
   const handleFile = async (e) => {
@@ -957,22 +957,19 @@ function TabHoaDonPDF() {
     if (!file) return;
     e.target.value = '';
     setResults([]); setSummary(null); setSaved(false);
-
     try {
-      setPhase('extracting'); setProgress('Đang giải nén ZIP (có thể nhiều lớp)…');
+      setPhase('extracting'); setProgress('Dang giai nen ZIP...');
       const pdfs = await extractAllPDFs(file);
-      if (!pdfs.length) throw new Error('Không tìm thấy file PDF nào trong ZIP');
-
+      if (!pdfs.length) throw new Error('Khong tim thay file PDF nao trong ZIP');
       setPhase('parsing');
       const parsed = [];
       for (let i = 0; i < pdfs.length; i++) {
-        setProgress(`Đọc PDF ${i + 1}/${pdfs.length}: ${pdfs[i].name}`);
+        setProgress('Doc PDF ' + (i+1) + '/' + pdfs.length + ': ' + pdfs[i].name);
         const text   = await extractPDFText(pdfs[i].data);
         const fields = extractInvoiceFields(text);
         parsed.push({ ...pdfs[i], ...fields });
       }
-
-      setPhase('matching'); setProgress('Đang đối chiếu với dữ liệu PVOIL trong DB…');
+      setPhase('matching'); setProgress('Dang doi chieu voi du lieu PVOIL...');
       const invoices = parsed.map(p => ({ ky_hieu_hd: p.ky_hieu_hd, so_hd: p.so_hd, pdf_file: p.name }));
       const res  = await fetch('/api/nhien-lieu/hoa-don', {
         method: 'POST',
@@ -981,12 +978,10 @@ function TabHoaDonPDF() {
       });
       const json = await res.json();
       if (json.error) throw new Error(json.error);
-
       const merged = json.results.map((r, i) => ({ ...r, data: parsed[i].data }));
       setResults(merged);
       setSummary(json.summary);
       setPhase('done'); setProgress('');
-
     } catch (err) {
       setPhase('error'); setProgress(err.message);
     }
@@ -1005,16 +1000,16 @@ function TabHoaDonPDF() {
       if (json.error) throw new Error(json.error);
       setSaved(true);
     } catch (err) {
-      alert('Lỗi lưu: ' + err.message);
+      alert('Loi luu: ' + err.message);
     } finally { setSaving(false); }
   };
 
   const handlePrintAll = async () => {
     const toPrint = results.filter(r => r.matched && r.data);
-    if (!toPrint.length) { alert('Không có hóa đơn khớp để in'); return; }
+    if (!toPrint.length) { alert('Khong co hoa don khop de in'); return; }
     setPrinting(true);
     try {
-      const { PDFDocument } = window.PDFLib;
+      const PDFDocument = window.PDFLib.PDFDocument;
       const mergedDoc = await PDFDocument.create();
       for (const r of toPrint) {
         try {
@@ -1028,7 +1023,7 @@ function TabHoaDonPDF() {
       const url   = URL.createObjectURL(blob);
       const win   = window.open(url, '_blank');
       if (win) win.onload = () => { win.focus(); win.print(); };
-    } catch (err) { alert('Lỗi in: ' + err.message); }
+    } catch (err) { alert('Loi in: ' + err.message); }
     finally { setPrinting(false); }
   };
 
@@ -1046,7 +1041,7 @@ function TabHoaDonPDF() {
 
   const isBusy = phase === 'extracting' || phase === 'parsing' || phase === 'matching';
 
-  if (libErr) return <div style={{ ...card, color:'#dc2626' }}>⚠️ {libErr}</div>;
+  if (libErr) return <div style={{ ...card, color:'#dc2626' }}>{libErr}</div>;
 
   return (
     <div>
@@ -1054,11 +1049,11 @@ function TabHoaDonPDF() {
         <div style={{ display:'flex', alignItems:'flex-start', gap:16, flexWrap:'wrap' }}>
           <div style={{ flex:1, minWidth:260 }}>
             <div style={{ fontSize:14, fontWeight:700, color:'#1e293b', marginBottom:4 }}>
-              📦 Upload file ZIP chứa hóa đơn PDF
+              Upload file ZIP chua hoa don PDF
             </div>
             <div style={{ fontSize:12, color:'#64748b', lineHeight:1.6 }}>
-              Hỗ trợ ZIP nhiều lớp lồng nhau. Tự động giải nén → đọc text PDF
-              → trích <b>Ký hiệu</b> &amp; <b>Số</b> → đối chiếu dữ liệu PVOIL đã import.
+              Ho tro ZIP nhieu lop long nhau. Tu dong giai nen, doc text PDF,
+              trich Ky hieu va So, doi chieu du lieu PVOIL da import.
             </div>
           </div>
           <label style={{
@@ -1066,20 +1061,19 @@ function TabHoaDonPDF() {
             opacity: (libsReady && !isBusy) ? 1 : 0.5,
             cursor:  (libsReady && !isBusy) ? 'pointer' : 'not-allowed',
           }}>
-            {!libsReady ? '⏳ Đang tải thư viện…' : isBusy ? '⏳ Đang xử lý…' : '📦 Chọn file ZIP'}
+            {!libsReady ? 'Dang tai thu vien...' : isBusy ? 'Dang xu ly...' : 'Chon file ZIP'}
             <input type="file" accept=".zip" style={{ display:'none' }}
               disabled={!libsReady || isBusy}
               onChange={handleFile} />
           </label>
         </div>
-
         {phase !== 'idle' && phase !== 'done' && (
           <div style={{
             marginTop:12, padding:'10px 14px', borderRadius:6, fontSize:13,
             background: phase === 'error' ? '#fef2f2' : '#eff6ff',
             color:      phase === 'error' ? '#dc2626' : '#1d4ed8',
           }}>
-            {phase !== 'error' && '⏳ '}{progress}
+            {phase !== 'error' && '... '}{progress}
           </div>
         )}
       </div>
@@ -1088,31 +1082,30 @@ function TabHoaDonPDF() {
         <div style={{ ...card, display:'flex', alignItems:'center', gap:20, flexWrap:'wrap' }}>
           <div style={{ display:'flex', gap:24 }}>
             {[
-              { v: summary.total,     c:'#1e293b', l:'Tổng PDF' },
-              { v: summary.matched,   c:'#16a34a', l:'Khớp' },
-              { v: summary.unmatched, c:'#dc2626', l:'Chưa khớp' },
-            ].map(({ v, c, l }) => (
-              <div key={l} style={{ textAlign:'center' }}>
-                <div style={{ fontSize:26, fontWeight:800, color:c }}>{v}</div>
-                <div style={{ fontSize:11, color:'#64748b' }}>{l}</div>
+              { v: summary.total,     c:'#1e293b', l:'Tong PDF' },
+              { v: summary.matched,   c:'#16a34a', l:'Khop' },
+              { v: summary.unmatched, c:'#dc2626', l:'Chua khop' },
+            ].map(function(x) { return (
+              <div key={x.l} style={{ textAlign:'center' }}>
+                <div style={{ fontSize:26, fontWeight:800, color:x.c }}>{x.v}</div>
+                <div style={{ fontSize:11, color:'#64748b' }}>{x.l}</div>
               </div>
-            ))}
+            ); })}
           </div>
-
           <div style={{ marginLeft:'auto', display:'flex', gap:8, flexWrap:'wrap' }}>
             {['all','matched','unmatched'].map(f => (
               <button key={f} onClick={() => setFilter(f)}
                 style={{ ...btn(filter === f ? '#1e40af' : '#94a3b8'), padding:'6px 12px', fontSize:12 }}>
-                {f === 'all' ? `Tất cả (${summary.total})` : f === 'matched' ? `✅ Khớp (${summary.matched})` : `❌ Chưa khớp (${summary.unmatched})`}
+                {f === 'all' ? 'Tat ca (' + summary.total + ')' : f === 'matched' ? 'Khop (' + summary.matched + ')' : 'Chua khop (' + summary.unmatched + ')'}
               </button>
             ))}
             <button onClick={handlePrintAll} disabled={printing}
               style={{ ...btn('#7c3aed'), padding:'6px 14px', fontSize:12 }}>
-              {printing ? '⏳ Đang in…' : `🖨 In ${summary.matched} HĐ khớp`}
+              {printing ? 'Dang in...' : 'In ' + summary.matched + ' HD khop'}
             </button>
             <button onClick={handleSave} disabled={saving || saved}
               style={{ ...btn(saved ? '#16a34a' : '#0891b2'), padding:'6px 14px', fontSize:12 }}>
-              {saved ? '✅ Đã lưu' : saving ? '⏳ Đang lưu…' : '💾 Lưu vào DB'}
+              {saved ? 'Da luu' : saving ? 'Dang luu...' : 'Luu vao DB'}
             </button>
           </div>
         </div>
@@ -1124,31 +1117,33 @@ function TabHoaDonPDF() {
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
               <thead>
                 <tr style={{ background:'#f8fafc', borderBottom:'2px solid #e2e8f0' }}>
-                  {['#','Tên file PDF','Ký hiệu HĐ','Số HĐ','Trạng thái','Biển số xe','Lái xe','Số lít','Tháng','In'].map((h,i) => (
-                    <th key={h} style={{ padding:'10px 12px', textAlign:[7].includes(i)?'right':[4,9].includes(i)?'center':'left', color:'#64748b', fontWeight:700, whiteSpace:'nowrap' }}>{h}</th>
-                  ))}
+                  {['#','Ten file PDF','Ky hieu HD','So HD','Trang thai','Bien so xe','Lai xe','So lit','Thang','In'].map(function(h,i) {
+                    return <th key={h} style={{ padding:'10px 12px', textAlign: i===7?'right':i===4||i===9?'center':'left', color:'#64748b', fontWeight:700, whiteSpace:'nowrap' }}>{h}</th>;
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {displayed.map((r, i) => (
-                  <tr key={i} style={{ borderBottom:'1px solid #f1f5f9', background: r.matched ? 'white' : '#fff9f9' }}>
-                    <td style={{ padding:'8px 12px', color:'#9ca3af' }}>{i + 1}</td>
-                    <td style={{ padding:'8px 12px', fontFamily:'monospace', fontSize:11, maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={r.pdf_file}>{r.pdf_file}</td>
-                    <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.ky_hieu_hd || <span style={{ color:'#fbbf24' }}>—</span>}</td>
-                    <td style={{ padding:'8px 12px', fontFamily:'monospace' }}>{r.so_hd || <span style={{ color:'#fbbf24' }}>—</span>}</td>
-                    <td style={{ padding:'8px 12px', textAlign:'center' }}><TagStatus matched={r.matched} /></td>
-                    <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.record?.bien_so || '—'}</td>
-                    <td style={{ padding:'8px 12px' }}>{r.record?.ten_tai_xe || '—'}</td>
-                    <td style={{ padding:'8px 12px', textAlign:'right' }}>{r.record?.so_luong_lit != null ? fmtNum(r.record.so_luong_lit, 2) : '—'}</td>
-                    <td style={{ padding:'8px 12px', color:'#64748b' }}>{r.record?.thang || '—'}</td>
-                    <td style={{ padding:'8px 12px', textAlign:'center' }}>
-                      {r.data && (
-                        <button onClick={() => handlePrintOne(r)}
-                          style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>🖨</button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {displayed.map(function(r, i) {
+                  return (
+                    <tr key={i} style={{ borderBottom:'1px solid #f1f5f9', background: r.matched ? 'white' : '#fff9f9' }}>
+                      <td style={{ padding:'8px 12px', color:'#9ca3af' }}>{i + 1}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:'monospace', fontSize:11, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={r.pdf_file}>{r.pdf_file}</td>
+                      <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.ky_hieu_hd || '—'}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:'monospace' }}>{r.so_hd || '—'}</td>
+                      <td style={{ padding:'8px 12px', textAlign:'center' }}><TagStatus matched={r.matched} /></td>
+                      <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.record ? r.record.bien_so : '—'}</td>
+                      <td style={{ padding:'8px 12px' }}>{r.record ? r.record.ten_tai_xe : '—'}</td>
+                      <td style={{ padding:'8px 12px', textAlign:'right' }}>{r.record && r.record.so_luong_lit != null ? fmtNum(r.record.so_luong_lit, 2) : '—'}</td>
+                      <td style={{ padding:'8px 12px', color:'#64748b' }}>{r.record ? r.record.thang : '—'}</td>
+                      <td style={{ padding:'8px 12px', textAlign:'center' }}>
+                        {r.data && (
+                          <button onClick={() => handlePrintOne(r)}
+                            style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>In</button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1158,38 +1153,8 @@ function TabHoaDonPDF() {
       {phase === 'idle' && (
         <div style={{ ...card, textAlign:'center', padding:56, color:'#94a3b8' }}>
           <div style={{ fontSize:44, marginBottom:12 }}>📦</div>
-          <div style={{ fontSize:14, color:'#64748b' }}>Upload file ZIP để bắt đầu xử lý hóa đơn PDF</div>
-          <div style={{ fontSize:12, marginTop:6 }}>Hỗ trợ ZIP nhiều lớp lồng nhau · Tự động trích Ký hiệu &amp; Số · Đối chiếu PVOIL</div>
-        </div>
-      )}
-    </div>
-  );
-}
-ten_tai_xe || '—'}</td>
-                    <td style={{ padding:'8px 12px', textAlign:'right' }}>
-                      {r.record?.so_luong_lit != null ? fmtNum(r.record.so_luong_lit, 2) : '—'}
-                    </td>
-                    <td style={{ padding:'8px 12px', color:'#64748b' }}>{r.record?.thang || '—'}</td>
-                    <td style={{ padding:'8px 12px', textAlign:'center' }}>
-                      {r.data && (
-                        <button onClick={() => handlePrintOne(r)}
-                          style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>🖨</button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Empty state */}
-      {phase === 'idle' && (
-        <div style={{ ...card, textAlign:'center', padding:56, color:'#94a3b8' }}>
-          <div style={{ fontSize:44, marginBottom:12 }}>📦</div>
-          <div style={{ fontSize:14, color:'#64748b' }}>Upload file ZIP để bắt đầu xử lý hóa đơn PDF</div>
-          <div style={{ fontSize:12, marginTop:6 }}>Hỗ trợ ZIP nhiều lớp lồng nhau · Tự động trích Ký hiệu &amp; Số · Đối chiếu PVOIL</div>
+          <div style={{ fontSize:14, color:'#64748b' }}>Upload file ZIP de bat dau xu ly hoa don PDF</div>
+          <div style={{ fontSize:12, marginTop:6 }}>Ho tro ZIP nhieu lop long nhau · Tu dong trich Ky hieu va So · Doi chieu PVOIL</div>
         </div>
       )}
     </div>
