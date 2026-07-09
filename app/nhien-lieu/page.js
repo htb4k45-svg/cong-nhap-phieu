@@ -917,27 +917,49 @@ function extractInvoiceFields(text, filename) {
   const mKy = t.match(kyHieuRx);
   const mSo = t.match(soRx);
 
-  let ky_hieu_hd = mKy ? mKy[1].trim() : null;
-  let so_hd      = mSo ? mSo[1].trim() : null;
-  let mst_file   = null;
+  let ky_hieu_text = mKy ? mKy[1].trim() : null;
+  let so_hd_text   = mSo ? mSo[1].trim() : null;
 
-  // Fallback từ tên file: pattern MST-KyHieuSoHD.pdf
-  // Ví dụ: 0301444626-K26TDH12142.pdf
+  // Chuẩn hoá: bỏ prefix mẫu số đầu (vd "1K26TLM" → "K26TLM")
+  // PVOIL lưu chỉ phần ký hiệu (K26TLM), PDF text có thêm mẫu số ở trước (1K26TLM)
+  let ky_hieu_norm = ky_hieu_text;
+  if (ky_hieu_norm && /^\d/.test(ky_hieu_norm)) {
+    ky_hieu_norm = ky_hieu_norm.replace(/^\d+/, '');
+  }
+
+  // Fallback từ tên file — lấy PHẦN CUỐI sau dấu - cuối cùng
+  // Ví dụ: 0105029292-022-K26TLM00237660.pdf → lastPart = K26TLM00237660
+  let ky_hieu_file = null;
+  let so_hd_file   = null;
+  let mst_file     = null;
   if (filename) {
     const stem  = filename.replace(/\.pdf$/i, '').split(/[\\/]/).pop();
     const parts = stem.split('-');
     if (parts.length >= 2) {
-      // phần đầu toàn số → MST
-      if (/^\d{8,13}$/.test(parts[0])) mst_file = parts[0];
-      const suffix  = parts.slice(1).join('');
-      const soMatch = suffix.match(/(\d+)$/);
-      const kyMatch = suffix.match(/^([A-Z0-9\/]+?)(\d+)$/);
-      if (!so_hd && soMatch)      so_hd      = soMatch[1];
-      if (!ky_hieu_hd && kyMatch) ky_hieu_hd = kyMatch[1];
+      const lastPart = parts[parts.length - 1];         // K26TLM00237660
+      const soMatch  = lastPart.match(/(\d+)$/);        // 00237660
+      const kyMatch  = lastPart.match(/^([A-Za-z][A-Z0-9]*?)(\d+)$/); // K26TLM
+      if (soMatch)  so_hd_file   = soMatch[1];
+      if (kyMatch)  ky_hieu_file = kyMatch[1];
+      // MST = tất cả parts trừ phần cuối
+      const mstPart = parts.slice(0, -1).join('-');
+      if (/^[\d\-]{8,}$/.test(mstPart)) mst_file = mstPart;
     }
   }
 
-  return { ky_hieu_hd, so_hd, mst_file };
+  // Ưu tiên: filename cho so_hd (chính xác hơn), ky_hieu thử norm trước rồi file
+  const ky_hieu_hd = ky_hieu_norm || ky_hieu_file || null;
+  const so_hd      = so_hd_file   || so_hd_text   || null;
+
+  // Trả thêm các key thay thế để thử match
+  return {
+    ky_hieu_hd,
+    so_hd,
+    mst_file,
+    // key thay thế: text gốc có thể chứa mẫu số prefix
+    alt_ky_hieu: ky_hieu_text !== ky_hieu_norm ? ky_hieu_text : null,
+    alt_so_hd:   so_hd_text !== so_hd_file ? so_hd_text : null,
+  };
 }
 
 function TagStatus({ matched }) {
@@ -1006,9 +1028,20 @@ function TabHoaDonPDF() {
         setProgress('Doc PDF ' + (i+1) + '/' + pdfs.length + ': ' + pdfs[i].name);
         const text   = await extractPDFText(pdfs[i].data);
         const fields = extractInvoiceFields(text, pdfs[i].name);
-        const key    = (fields.ky_hieu_hd || '') + '|' + (fields.so_hd || '');
         const blob   = new Blob([pdfs[i].data], { type: 'application/pdf' });
-        newMap[key]  = { url: URL.createObjectURL(blob), name: pdfs[i].name, ...fields, data: pdfs[i].data };
+        const entry  = { url: URL.createObjectURL(blob), name: pdfs[i].name, ...fields, data: pdfs[i].data };
+        // Lưu dưới key chính
+        const key  = (fields.ky_hieu_hd || '') + '|' + (fields.so_hd || '');
+        newMap[key] = entry;
+        // Lưu thêm key thay thế (ky_hieu có/không có prefix mẫu số)
+        if (fields.alt_ky_hieu) {
+          const altKey = fields.alt_ky_hieu + '|' + (fields.so_hd || '');
+          if (!newMap[altKey]) newMap[altKey] = entry;
+        }
+        if (fields.alt_so_hd) {
+          const altKey2 = (fields.ky_hieu_hd || '') + '|' + fields.alt_so_hd;
+          if (!newMap[altKey2]) newMap[altKey2] = entry;
+        }
       }
       setPdfMap(newMap);
       setPhase('done'); setProgress('');
