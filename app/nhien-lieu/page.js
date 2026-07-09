@@ -852,67 +852,6 @@ function TabImportKm() {
   );
 }
 
-// ══════════════════════════════════════════════════════════
-// Tab 4: HÓA ĐƠN PDF
-// ══════════════════════════════════════════════════════════
-const CDN = {
-  JSZIP:   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
-  PDFJS:   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  WORKER:  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
-  PDFLIB:  'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
-};
-
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = src; s.onload = resolve; s.onerror = reject;
-    document.head.appendChild(s);
-  });
-}
-
-async function extractAllPDFs(file) {
-  const JSZip = window.JSZip;
-  const pdfs  = [];
-
-  async function processZip(buf, prefix) {
-    const zip     = await JSZip.loadAsync(buf);
-    const entries = Object.entries(zip.files);
-    for (const [name, entry] of entries) {
-      if (entry.dir) continue;
-      const lower = name.toLowerCase();
-      if (lower.endsWith('.pdf')) {
-        const data      = await entry.async('arraybuffer');
-        const shortName = prefix + name.split('/').pop();
-        pdfs.push({ name: shortName, data });
-      } else if (lower.endsWith('.zip')) {
-        const innerBuf    = await entry.async('arraybuffer');
-        const innerPrefix = prefix + name.replace(/\.zip$/i, '/');
-        await processZip(innerBuf, innerPrefix);
-      }
-    }
-  }
-
-  const buf = await file.arrayBuffer();
-  await processZip(buf, '');
-  return pdfs;
-}
-
-async function extractPDFText(arrayBuffer) {
-  const pdfjsLib = window.pdfjsLib;
-  const pdf      = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
-  let   text     = '';
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page    = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    text += content.items.map(it => it.str).join(' ') + '\n';
-  }
-  return text;
-}
-
-// ── Trích xuất Ký hiệu + Số HĐ từ tên file hoặc PDF text ──────────────────
-// Format PVOIL: {MST}_{mauSo}_{KyHieu}_{SoHD}.pdf
-// Ví dụ: 0105029292-022_1_K26TSH_00452244.pdf
 function extractInvoiceFields(text, filename) {
   let ky_hieu_hd = null;
   let so_hd      = null;
