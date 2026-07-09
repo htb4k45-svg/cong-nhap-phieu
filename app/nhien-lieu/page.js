@@ -166,6 +166,7 @@ const input = {
 // ════════════════════════════════════════════════════════════════════════════
 export default function NhienLieuPage() {
   const [tab, setTab] = useState('bao-cao'); // 'import-pvoil' | 'import-km' | 'bao-cao' | 'hoa-don-pdf'
+  const [pdfMap, setPdfMap] = useState({});  // lifted: ky_hieu_hd|so_hd → { url, name }
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc', padding: '24px 16px' }}>
@@ -198,10 +199,10 @@ export default function NhienLieuPage() {
         </div>
 
         {/* Dùng CSS hide/show để giữ state khi đổi tab */}
-        <div style={{ display: tab === 'bao-cao'      ? 'block' : 'none' }}><TabBaoCao /></div>
+        <div style={{ display: tab === 'bao-cao'      ? 'block' : 'none' }}><TabBaoCao pdfMap={pdfMap} /></div>
         <div style={{ display: tab === 'import-pvoil' ? 'block' : 'none' }}><TabImportPVOIL /></div>
         <div style={{ display: tab === 'import-km'    ? 'block' : 'none' }}><TabImportKm /></div>
-        <div style={{ display: tab === 'hoa-don-pdf'  ? 'block' : 'none' }}><TabHoaDonPDF /></div>
+        <div style={{ display: tab === 'hoa-don-pdf'  ? 'block' : 'none' }}><TabHoaDonPDF pdfMap={pdfMap} setPdfMap={setPdfMap} /></div>
       </div>
     </div>
   );
@@ -252,7 +253,7 @@ function detailRow(d, bien_so) {
 // ══════════════════════════════════════════════════════════
 // Tab 1: BÁO CÁO
 // ══════════════════════════════════════════════════════════
-function TabBaoCao() {
+function TabBaoCao({ pdfMap = {} }) {
   const [thang, setThang]       = useState(thisMonth());
   const [data, setData]         = useState(null);
   const [loading, setLoading]   = useState(false);
@@ -470,7 +471,7 @@ function TabBaoCao() {
                         {isExp && (
                           <tr key={r.bien_so + '_det'}>
                             <td colSpan={17} style={{ padding: 0, background: '#f0f7ff', borderBottom: '2px solid #2563eb' }}>
-                              <InlineDetail summaryRow={r} det={det} thang={thang} />
+                              <InlineDetail summaryRow={r} det={det} thang={thang} pdfMap={pdfMap} />
                             </td>
                           </tr>
                         )}
@@ -488,7 +489,7 @@ function TabBaoCao() {
 }
 
 // ── Inline detail bên trong table ────────────────────────────────────────────
-function InlineDetail({ summaryRow: r, det, thang }) {
+function InlineDetail({ summaryRow: r, det, thang, pdfMap = {} }) {
   const rows = det?.rows || [];
   const isLoading = det?.loading !== false;
 
@@ -497,6 +498,34 @@ function InlineDetail({ summaryRow: r, det, thang }) {
     toCSV([DETAIL_HEADERS.map(([h]) => h), ...rows.map(d => detailRow(d, r.bien_so))],
           `chi-tiet-xe_${r.bien_so}_${thang}.csv`);
   };
+
+  // In tất cả HĐ PDF của xe này
+  const printVehiclePDFs = async () => {
+    const keys = rows
+      .map(d => (d.ky_hieu_hd || '') + '|' + normSoHD(d.so_hd))
+      .filter(k => pdfMap[k]);
+    if (!keys.length) { alert('Không có hóa đơn PDF nào cho xe này'); return; }
+    if (!window.PDFLib) { alert('PDF-lib chưa sẵn sàng'); return; }
+    try {
+      const { PDFDocument } = window.PDFLib;
+      const merged = await PDFDocument.create();
+      for (const k of keys) {
+        const e = pdfMap[k];
+        if (!e?.url) continue;
+        const buf = await fetch(e.url).then(r => r.arrayBuffer());
+        const doc = await PDFDocument.load(buf);
+        const pages = await merged.copyPages(doc, doc.getPageIndices());
+        pages.forEach(p => merged.addPage(p));
+      }
+      const bytes = await merged.save();
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+      const win = window.open(url, '_blank');
+      if (win) win.addEventListener('load', () => { win.focus(); win.print(); });
+    } catch (err) { alert('Lỗi in PDF: ' + err.message); }
+  };
+
+  // Đếm số HĐ có PDF cho xe này (chỉ tính khi rows đã load)
+  const pdfCount = rows.filter(d => pdfMap[(d.ky_hieu_hd || '') + '|' + normSoHD(d.so_hd)]).length;
 
   return (
     <div>
@@ -513,10 +542,18 @@ function InlineDetail({ summaryRow: r, det, thang }) {
             {r.vuot_dm && <span style={{ marginLeft: 6, padding: '1px 7px', background: '#dc2626', borderRadius: 8, fontSize: 10, fontWeight: 700 }}>VƯỢT ĐM +{fmtNum(r.chenh_lech, 1)}</span>}
           </span>
         )}
-        <button onClick={exportThis} disabled={!rows.length || isLoading}
-          style={{ marginLeft: 'auto', padding: '4px 12px', background: '#059669', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600, opacity: rows.length ? 1 : 0.5 }}>
-          ⬇ Xuất CSV xe này
-        </button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          {!isLoading && pdfCount > 0 && (
+            <button onClick={printVehiclePDFs}
+              style={{ padding: '4px 12px', background: '#7c3aed', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+              🖨️ In {pdfCount} HĐ PDF
+            </button>
+          )}
+          <button onClick={exportThis} disabled={!rows.length || isLoading}
+            style={{ padding: '4px 12px', background: '#059669', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600, opacity: rows.length ? 1 : 0.5 }}>
+            ⬇ Xuất CSV xe này
+          </button>
+        </div>
       </div>
 
       {isLoading && <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: 13 }}>Đang tải giao dịch...</div>}
@@ -896,16 +933,13 @@ function normSoHD(s) {
 // ── CDN constants ─────────────────────────────────────────────────────────────
 const CDN = {
   JSZIP:  'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
-  PDFJS:  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  WORKER: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
   PDFLIB: 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
 };
 
 // ── TabHoaDonPDF ──────────────────────────────────────────────────────────────
-function TabHoaDonPDF() {
+function TabHoaDonPDF({ pdfMap, setPdfMap }) {
   const [thang,     setThang]    = useState(thisMonth());
   const [dbRecs,    setDbRecs]   = useState(null);
-  const [pdfMap,    setPdfMap]   = useState({});
   const [phase,     setPhase]    = useState('idle');
   const [progress,  setProgress] = useState('');
   const [saved,     setSaved]    = useState(false);
@@ -913,7 +947,7 @@ function TabHoaDonPDF() {
   const [dbLoading, setDbLoading]= useState(false);
   const [libsReady, setLibsReady]= useState(false);
 
-  // Load CDN libs một lần
+  // Load CDN libs một lần (JSZip + PDFLib, không cần PDF.js)
   useEffect(() => {
     const load = (src) => new Promise((res, rej) => {
       if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
@@ -922,12 +956,8 @@ function TabHoaDonPDF() {
       document.head.appendChild(s);
     });
     load(CDN.JSZIP)
-      .then(() => load(CDN.PDFJS))
       .then(() => load(CDN.PDFLIB))
-      .then(() => {
-        if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.WORKER;
-        setLibsReady(true);
-      })
+      .then(() => setLibsReady(true))
       .catch(err => console.error('CDN load error:', err));
   }, []);
 
@@ -953,24 +983,33 @@ function TabHoaDonPDF() {
 
   useEffect(() => { loadDB(thang); }, [thang]);
 
-  // Giải nén ZIP + trích xuất PDF
+  // Giải nén ZIP + trích xuất PDF (dùng XML để lấy ký hiệu/số HĐ)
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     if (!libsReady) { alert('Thư viện chưa sẵn sàng, thử lại sau vài giây'); return; }
     setPhase('extracting'); setProgress('Đang giải nén ZIP...');
     try {
-      const buf  = await file.arrayBuffer();
-      const zip  = await window.JSZip.loadAsync(buf);
+      const buf = await file.arrayBuffer();
+      const zip = await window.JSZip.loadAsync(buf);
 
-      // Thu thập toàn bộ file PDF (kể cả trong ZIP lồng nhau)
-      const pdfs = [];
+      // Thu thập PDF + XML từ ZIP (kể cả ZIP lồng nhau)
+      const pdfFiles = [];
+      const xmlMap   = {};  // stem (lowercase) → JSZip entry
+
       const processZip = async (z) => {
         const subs = [];
         z.forEach((path, entry) => {
           if (entry.dir) return;
-          if (path.toLowerCase().endsWith('.pdf')) pdfs.push({ name: path.split('/').pop(), entry });
-          else if (path.toLowerCase().endsWith('.zip')) subs.push(entry);
+          const name  = path.split('/').pop();
+          const lower = name.toLowerCase();
+          if (lower.endsWith('.pdf')) {
+            pdfFiles.push({ name, entry });
+          } else if (lower.endsWith('.xml')) {
+            xmlMap[lower.replace(/\.xml$/, '')] = entry;
+          } else if (lower.endsWith('.zip')) {
+            subs.push(entry);
+          }
         });
         for (const sub of subs) {
           const inner = await window.JSZip.loadAsync(await sub.async('arraybuffer'));
@@ -979,35 +1018,47 @@ function TabHoaDonPDF() {
       };
       await processZip(zip);
 
-      if (pdfs.length === 0) { setPhase('idle'); alert('Không tìm thấy file PDF trong ZIP'); return; }
+      if (pdfFiles.length === 0) { setPhase('idle'); alert('Không tìm thấy file PDF trong ZIP'); return; }
 
-      setProgress('Đọc ' + pdfs.length + ' file PDF...');
+      setProgress('Xử lý ' + pdfFiles.length + ' file PDF...');
       const newMap = {};
-      for (let i = 0; i < pdfs.length; i++) {
-        setProgress('Đọc PDF ' + (i + 1) + '/' + pdfs.length + ': ' + pdfs[i].name);
+
+      for (let i = 0; i < pdfFiles.length; i++) {
+        const { name, entry } = pdfFiles[i];
+        setProgress('Xử lý ' + (i + 1) + '/' + pdfFiles.length + ': ' + name);
         try {
-          const data    = await pdfs[i].entry.async('arraybuffer');
-          // Tạo Blob TRƯỚC khi PDF.js đọc (PDF.js transfer/detach ArrayBuffer)
-          const blob    = new Blob([data], { type: 'application/pdf' });
-          const dataCopy = data.slice ? data.slice(0) : data;
-          let text = '';
-          try {
-            const pdfDoc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
-            for (let p = 1; p <= pdfDoc.numPages; p++) {
-              const page    = await pdfDoc.getPage(p);
-              const content = await page.getTextContent();
-              text += content.items.map(it => it.str).join(' ') + '\n';
+          let ky_hieu_hd = null, so_hd = null;
+
+          // Ưu tiên đọc file XML cùng tên
+          const stem = name.toLowerCase().replace(/\.pdf$/, '');
+          const xmlEntry = xmlMap[stem];
+          if (xmlEntry) {
+            try {
+              const xmlText = await xmlEntry.async('string');
+              const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+              ky_hieu_hd = doc.querySelector('KHHDon')?.textContent?.trim() || null;
+              so_hd      = doc.querySelector('SHDon')?.textContent?.trim()  || null;
+            } catch (xmlErr) {
+              console.warn('XML parse error:', name, xmlErr);
             }
-          } catch (pdfErr) {
-            console.warn('PDF text error:', pdfs[i].name, pdfErr);
           }
-          const fields = extractInvoiceFields(text, pdfs[i].name);
-          const key    = (fields.ky_hieu_hd || '') + '|' + normSoHD(fields.so_hd);
-          newMap[key]  = { url: URL.createObjectURL(blob), name: pdfs[i].name, ...fields };
+
+          // Fallback: phân tích từ tên file (định dạng {MST}_{mauSo}_{KyHieu}_{SoHD}.pdf)
+          if (!ky_hieu_hd || !so_hd) {
+            const f = extractInvoiceFields('', name);
+            if (!ky_hieu_hd) ky_hieu_hd = f.ky_hieu_hd;
+            if (!so_hd)      so_hd      = f.so_hd;
+          }
+
+          const data = await entry.async('arraybuffer');
+          const blob = new Blob([data], { type: 'application/pdf' });
+          const key  = (ky_hieu_hd || '') + '|' + normSoHD(so_hd);
+          newMap[key] = { url: URL.createObjectURL(blob), name, ky_hieu_hd, so_hd };
         } catch (err) {
-          console.warn('Skip PDF:', pdfs[i].name, err.message);
+          console.warn('Skip PDF:', name, err.message);
         }
       }
+
       setPdfMap(newMap);
       setPhase('done');
       setProgress('Xong! ' + Object.keys(newMap).length + ' PDF đã xử lý.');
