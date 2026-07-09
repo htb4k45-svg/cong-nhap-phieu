@@ -1,5 +1,13 @@
 import { NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+
+function createAdminClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.SUPABASE_SECRET_KEY,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
+}
 
 // GET /api/nhien-lieu/hoa-don?thang=YYYY-MM
 // Trả về tất cả hóa đơn trong tháng từ nhien_lieu_gd
