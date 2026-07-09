@@ -197,10 +197,11 @@ export default function NhienLieuPage() {
           ))}
         </div>
 
-        {tab === 'bao-cao'      && <TabBaoCao />}
-        {tab === 'import-pvoil' && <TabImportPVOIL />}
-        {tab === 'import-km'    && <TabImportKm />}
-        {tab === 'hoa-don-pdf'  && <TabHoaDonPDF />}
+        {/* Dùng CSS hide/show để giữ state khi đổi tab */}
+        <div style={{ display: tab === 'bao-cao'      ? 'block' : 'none' }}><TabBaoCao /></div>
+        <div style={{ display: tab === 'import-pvoil' ? 'block' : 'none' }}><TabImportPVOIL /></div>
+        <div style={{ display: tab === 'import-km'    ? 'block' : 'none' }}><TabImportKm /></div>
+        <div style={{ display: tab === 'hoa-don-pdf'  ? 'block' : 'none' }}><TabHoaDonPDF /></div>
       </div>
     </div>
   );
@@ -909,16 +910,31 @@ async function extractPDFText(arrayBuffer) {
   return text;
 }
 
-function extractInvoiceFields(text) {
+function extractInvoiceFields(text, filename) {
   const t = text.replace(/\s+/g, ' ');
   const kyHieuRx = /[Kk][yý]\s*hi[eệ]u\s*(?:\([^)]*\))?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\/\-]{1,20})/u;
-  const soRx     = /\bS[oố]\b\s*(?:h[oó]a?\s*[dđ][oơ]n\s*)?(?:\([^)]*\))?\s*[:\-]?\s*(\d{6,12})/iu;
+  const soRx     = /\bS[oố]\b\s*(?:h[oó]a?\s*[dđ][oơ]n\s*)?(?:\([^)]*\))?\s*[:\-]?\s*(\d{4,12})/iu;
   const mKy = t.match(kyHieuRx);
   const mSo = t.match(soRx);
-  return {
-    ky_hieu_hd: mKy ? mKy[1].trim() : null,
-    so_hd:      mSo ? mSo[1].trim() : null,
-  };
+
+  let ky_hieu_hd = mKy ? mKy[1].trim() : null;
+  let so_hd      = mSo ? mSo[1].trim() : null;
+
+  // Fallback: phân tích từ tên file — pattern: MST-KyHieuSoHD.pdf
+  // Ví dụ: 0301444626-K26TDH12142.pdf → ky_hieu=K26TDH, so_hd=12142
+  if ((!so_hd || !ky_hieu_hd) && filename) {
+    const stem  = filename.replace(/\.pdf$/i, '').split(/[\\/]/).pop();
+    const parts = stem.split('-');
+    if (parts.length >= 2) {
+      const suffix  = parts.slice(1).join('');
+      const soMatch = suffix.match(/(\d+)$/);
+      const kyMatch = suffix.match(/^([A-Z0-9\/]+?)(\d+)$/);
+      if (!so_hd && soMatch)      so_hd      = soMatch[1];
+      if (!ky_hieu_hd && kyMatch) ky_hieu_hd = kyMatch[1];
+    }
+  }
+
+  return { ky_hieu_hd, so_hd };
 }
 
 function TagStatus({ matched }) {
@@ -933,11 +949,16 @@ function TabHoaDonPDF() {
   const [phase,     setPhase]     = useState('idle');
   const [progress,  setProgress]  = useState('');
   const [results,   setResults]   = useState([]);
+  const [blobUrls,  setBlobUrls]  = useState({});
   const [summary,   setSummary]   = useState(null);
   const [saved,     setSaved]     = useState(false);
   const [saving,    setSaving]    = useState(false);
   const [printing,  setPrinting]  = useState(false);
   const [filter,    setFilter]    = useState('all');
+
+  useEffect(() => {
+    return () => { Object.values(blobUrls).forEach(u => URL.revokeObjectURL(u)); };
+  }, [blobUrls]);
 
   useEffect(() => {
     Promise.all([
@@ -957,6 +978,7 @@ function TabHoaDonPDF() {
     if (!file) return;
     e.target.value = '';
     setResults([]); setSummary(null); setSaved(false);
+    setBlobUrls(prev => { Object.values(prev).forEach(u => URL.revokeObjectURL(u)); return {}; });
     try {
       setPhase('extracting'); setProgress('Dang giai nen ZIP...');
       const pdfs = await extractAllPDFs(file);
@@ -966,9 +988,12 @@ function TabHoaDonPDF() {
       for (let i = 0; i < pdfs.length; i++) {
         setProgress('Doc PDF ' + (i+1) + '/' + pdfs.length + ': ' + pdfs[i].name);
         const text   = await extractPDFText(pdfs[i].data);
-        const fields = extractInvoiceFields(text);
+        const fields = extractInvoiceFields(text, pdfs[i].name);
         parsed.push({ ...pdfs[i], ...fields });
       }
+      const urls = {};
+      parsed.forEach(p => { urls[p.name] = URL.createObjectURL(new Blob([p.data], { type: 'application/pdf' })); });
+      setBlobUrls(urls);
       setPhase('matching'); setProgress('Dang doi chieu voi du lieu PVOIL...');
       const invoices = parsed.map(p => ({ ky_hieu_hd: p.ky_hieu_hd, so_hd: p.so_hd, pdf_file: p.name }));
       const res  = await fetch('/api/nhien-lieu/hoa-don', {
@@ -1127,7 +1152,12 @@ function TabHoaDonPDF() {
                   return (
                     <tr key={i} style={{ borderBottom:'1px solid #f1f5f9', background: r.matched ? 'white' : '#fff9f9' }}>
                       <td style={{ padding:'8px 12px', color:'#9ca3af' }}>{i + 1}</td>
-                      <td style={{ padding:'8px 12px', fontFamily:'monospace', fontSize:11, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={r.pdf_file}>{r.pdf_file}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:'monospace', fontSize:11, maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={r.pdf_file}>
+                        {blobUrls[r.pdf_file]
+                          ? <a href={blobUrls[r.pdf_file]} target="_blank" rel="noreferrer"
+                              style={{ color:'#2563eb', textDecoration:'underline' }}>{r.pdf_file}</a>
+                          : r.pdf_file}
+                      </td>
                       <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.ky_hieu_hd || '—'}</td>
                       <td style={{ padding:'8px 12px', fontFamily:'monospace' }}>{r.so_hd || '—'}</td>
                       <td style={{ padding:'8px 12px', textAlign:'center' }}><TagStatus matched={r.matched} /></td>
