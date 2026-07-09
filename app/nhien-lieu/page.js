@@ -1026,10 +1026,12 @@ function TabHoaDonPDF() {
       const newMap = {};
       for (let i = 0; i < pdfs.length; i++) {
         setProgress('Doc PDF ' + (i+1) + '/' + pdfs.length + ': ' + pdfs[i].name);
-        const text   = await extractPDFText(pdfs[i].data);
-        const fields = extractInvoiceFields(text, pdfs[i].name);
-        const blob   = new Blob([pdfs[i].data], { type: 'application/pdf' });
-        const entry  = { url: URL.createObjectURL(blob), name: pdfs[i].name, ...fields, data: pdfs[i].data };
+        // Tạo Blob TRƯỚC khi extractPDFText vì PDF.js transfer ArrayBuffer (detach nó)
+        const origData = pdfs[i].data instanceof ArrayBuffer ? pdfs[i].data.slice(0) : pdfs[i].data;
+        const blob     = new Blob([pdfs[i].data], { type: 'application/pdf' });
+        const text     = await extractPDFText(origData);
+        const fields   = extractInvoiceFields(text, pdfs[i].name);
+        const entry    = { url: URL.createObjectURL(blob), name: pdfs[i].name, ...fields };
         // Lưu dưới key chính
         const key  = (fields.ky_hieu_hd || '') + '|' + (fields.so_hd || '');
         newMap[key] = entry;
@@ -1222,46 +1224,4 @@ function TabHoaDonPDF() {
                           <div style={{ display:'flex', gap:4 }}>
                             <button onClick={() => openPDF(key)}
                               style={{ ...btn('#2563eb'), padding:'3px 10px', fontSize:11 }}>🔍 Xem</button>
-                            <button onClick={async () => {
-                              try {
-                                const PDFDocument = window.PDFLib.PDFDocument;
-                                const doc   = await PDFDocument.load(pdfEntry.data);
-                                const merged = await PDFDocument.create();
-                                const pages = await merged.copyPages(doc, doc.getPageIndices());
-                                pages.forEach(p => merged.addPage(p));
-                                const bytes = await merged.save();
-                                const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-                                const win = window.open(url, '_blank');
-                                if (win) win.addEventListener('load', () => { win.focus(); win.print(); });
-                              } catch(err) { alert('Loi: ' + err.message); }
-                            }} style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>🖨</button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Loading */}
-      {dbLoading && (
-        <div style={{ ...card, textAlign:'center', padding:40, color:'#94a3b8' }}>
-          Đang tải danh sách hóa đơn tháng {thang}…
-        </div>
-      )}
-
-      {/* Empty */}
-      {dbRecs !== null && !dbLoading && dbRecs.length === 0 && (
-        <div style={{ ...card, textAlign:'center', padding:48, color:'#94a3b8' }}>
-          <div style={{ fontSize:36, marginBottom:8 }}>📭</div>
-          <div>Chưa có hóa đơn nào trong tháng {thang}</div>
-          <div style={{ fontSize:12, marginTop:4 }}>Import file PVOIL trước, sau đó upload ZIP hóa đơn PDF</div>
-        </div>
-      )}
-    </div>
-  );
-}
+   
