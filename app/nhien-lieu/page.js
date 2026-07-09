@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
+import { generateVehicleReport } from './reportGen';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function normPlate(raw) {
@@ -547,6 +548,12 @@ function InlineDetail({ summaryRow: r, det, thang, pdfMap = {} }) {
             <button onClick={printVehiclePDFs}
               style={{ padding: '4px 12px', background: '#7c3aed', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
               🖨️ In {pdfCount} HĐ PDF
+            </button>
+          )}
+          {!isLoading && rows.length > 0 && (
+            <button onClick={() => generateVehicleReport(r, rows, thang)}
+              style={{ padding: '4px 12px', background: '#d97706', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+              📊 Xuất báo cáo Excel
             </button>
           )}
           <button onClick={exportThis} disabled={!rows.length || isLoading}
@@ -1321,6 +1328,7 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
         </div>
       )}
 
+      {/* Lưu vào DB */}
       {/* Lưu vào DB */}
       {matchedKeys.size > 0 && (
         <div style={{ display:'flex', gap:8, alignItems:'center', marginTop:8 }}>
