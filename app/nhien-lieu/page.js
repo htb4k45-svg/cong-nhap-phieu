@@ -1060,7 +1060,11 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
         try {
           let ky_hieu_hd = null, so_hd = null;
 
-          // Ưu tiên đọc file XML cùng tên
+          // Tên file chứa số HĐ đầy đủ (kể cả số 0 đầu, vd: 00452248)
+          const f = extractInvoiceFields('', name);
+
+          // Ưu tiên đọc ký hiệu HĐ từ XML (đáng tin hơn tên file)
+          // Số HĐ lấy từ tên file để giữ nguyên số 0 đầu
           const stem = name.toLowerCase().replace(/\.pdf$/, '');
           const xmlEntry = xmlMap[stem];
           if (xmlEntry) {
@@ -1068,19 +1072,18 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
               const xmlText = await xmlEntry.async('string');
               const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
               // getElementsByTagName hoạt động đúng với XML có namespace (querySelector không)
-              ky_hieu_hd = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || null;
-              so_hd      = doc.getElementsByTagName('SHDon')[0]?.textContent?.trim()  || null;
-              console.log('[XML]', name, '→ KHHDon:', ky_hieu_hd, 'SHDon:', so_hd);
+              ky_hieu_hd = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || f.ky_hieu_hd;
+              so_hd      = f.so_hd || doc.getElementsByTagName('SHDon')[0]?.textContent?.trim() || null;
+              console.log('[HĐ]', name, '→ KyHieu:', ky_hieu_hd, 'SoHD:', so_hd);
             } catch (xmlErr) {
               console.warn('XML parse error:', name, xmlErr);
+              ky_hieu_hd = f.ky_hieu_hd;
+              so_hd      = f.so_hd;
             }
-          }
-
-          // Fallback: phân tích từ tên file (định dạng {MST}_{mauSo}_{KyHieu}_{SoHD}.pdf)
-          if (!ky_hieu_hd || !so_hd) {
-            const f = extractInvoiceFields('', name);
-            if (!ky_hieu_hd) ky_hieu_hd = f.ky_hieu_hd;
-            if (!so_hd)      so_hd      = f.so_hd;
+          } else {
+            // Không có XML → dùng tên file
+            ky_hieu_hd = f.ky_hieu_hd;
+            so_hd      = f.so_hd;
           }
 
           const data = await entry.async('arraybuffer');
@@ -1274,7 +1277,7 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
                       {r.ky_hieu_hd || '—'}
                     </td>
                     <td style={{ padding:'8px 12px', fontFamily:'monospace', fontWeight:600 }}>
-                      {r.so_hd || '—'}
+.so_hd || '—'}
                     </td>
                     <td style={{ padding:'8px 12px', fontWeight:600, color:'#2563eb' }}>
                       {r.bien_so || '—'}
