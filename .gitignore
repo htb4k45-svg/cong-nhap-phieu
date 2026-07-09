@@ -17,3 +17,5 @@ build/
 *.pem
 npm-debug.log*
 scripts/service-account.json
+*.rar 
+*.zip 

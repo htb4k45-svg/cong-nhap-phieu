@@ -165,7 +165,7 @@ const input = {
 
 // ════════════════════════════════════════════════════════════════════════════
 export default function NhienLieuPage() {
-  const [tab, setTab] = useState('bao-cao'); // 'import-pvoil' | 'import-km' | 'bao-cao'
+  const [tab, setTab] = useState('bao-cao'); // 'import-pvoil' | 'import-km' | 'bao-cao' | 'hoa-don-pdf'
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc', padding: '24px 16px' }}>
@@ -183,6 +183,7 @@ export default function NhienLieuPage() {
             { id: 'bao-cao',      label: '📊 Báo cáo tháng' },
             { id: 'import-pvoil', label: '📥 Import PVOIL' },
             { id: 'import-km',    label: '🛣 Import Km định mức' },
+            { id: 'hoa-don-pdf',  label: '📄 Hóa đơn PDF' },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               style={{
@@ -199,6 +200,7 @@ export default function NhienLieuPage() {
         {tab === 'bao-cao'      && <TabBaoCao />}
         {tab === 'import-pvoil' && <TabImportPVOIL />}
         {tab === 'import-km'    && <TabImportKm />}
+        {tab === 'hoa-don-pdf'  && <TabHoaDonPDF />}
       </div>
     </div>
   );
@@ -838,11 +840,356 @@ function TabImportKm() {
                   <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700 }}>{fmtNum((r.km_cuoi||0)-(r.km_dau||0))}</td>
                   <td style={{ padding: '6px 10px', textAlign: 'right', color: '#7c3aed' }}>{r.dinh_muc_l_100km ?? '—'}</td>
                   <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_dau_lit ?? '—'}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_cuoi_lit ?? '—'}</td>
+                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_cuoi_lit ??
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// Tab 4: HÓA ĐƠN PDF
+// ══════════════════════════════════════════════════════════
+const CDN = {
+  JSZIP:   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+  PDFJS:   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+  WORKER:  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+  PDFLIB:  'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
+};
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function extractAllPDFs(file) {
+  const JSZip = window.JSZip;
+  const pdfs  = [];
+
+  async function processZip(buf, prefix) {
+    const zip     = await JSZip.loadAsync(buf);
+    const entries = Object.entries(zip.files);
+    for (const [name, entry] of entries) {
+      if (entry.dir) continue;
+      const lower = name.toLowerCase();
+      if (lower.endsWith('.pdf')) {
+        const data      = await entry.async('arraybuffer');
+        const shortName = prefix + name.split('/').pop();
+        pdfs.push({ name: shortName, data });
+      } else if (lower.endsWith('.zip')) {
+        const innerBuf    = await entry.async('arraybuffer');
+        const innerPrefix = prefix + name.replace(/\.zip$/i, '/');
+        await processZip(innerBuf, innerPrefix);
+      }
+    }
+  }
+
+  const buf = await file.arrayBuffer();
+  await processZip(buf, '');
+  return pdfs;
+}
+
+async function extractPDFText(arrayBuffer) {
+  const pdfjsLib = window.pdfjsLib;
+  const pdf      = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  let   text     = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page    = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map(it => it.str).join(' ') + '\n';
+  }
+  return text;
+}
+
+function extractInvoiceFields(text) {
+  const t = text.replace(/\s+/g, ' ');
+  const kyHieuRx = /[Kk][yý]\s*hi[eệ]u\s*(?:\([^)]*\))?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\/\-]{1,20})/u;
+  const soRx     = /\bS[oố]\b\s*(?:h[oó]a?\s*[dđ][oơ]n\s*)?(?:\([^)]*\))?\s*[:\-]?\s*(\d{6,12})/iu;
+  const mKy = t.match(kyHieuRx);
+  const mSo = t.match(soRx);
+  return {
+    ky_hieu_hd: mKy ? mKy[1].trim() : null,
+    so_hd:      mSo ? mSo[1].trim() : null,
+  };
+}
+
+function TagStatus({ matched }) {
+  return matched
+    ? <span style={{ background:'#dcfce7', color:'#16a34a', padding:'2px 8px', borderRadius:99, fontSize:11, fontWeight:700 }}>✅ Khớp</span>
+    : <span style={{ background:'#fee2e2', color:'#dc2626', padding:'2px 8px', borderRadius:99, fontSize:11, fontWeight:700 }}>❌ Chưa khớp</span>;
+}
+
+function TabHoaDonPDF() {
+  const [libsReady, setLibsReady] = useState(false);
+  const [libErr,    setLibErr]    = useState(null);
+  const [phase,     setPhase]     = useState('idle');
+  const [progress,  setProgress]  = useState('');
+  const [results,   setResults]   = useState([]);
+  const [summary,   setSummary]   = useState(null);
+  const [saved,     setSaved]     = useState(false);
+  const [saving,    setSaving]    = useState(false);
+  const [printing,  setPrinting]  = useState(false);
+  const [filter,    setFilter]    = useState('all');
+
+  useEffect(() => {
+    Promise.all([
+      loadScript(CDN.JSZIP),
+      loadScript(CDN.PDFJS),
+      loadScript(CDN.PDFLIB),
+    ])
+      .then(() => {
+        if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.WORKER;
+        setLibsReady(true);
+      })
+      .catch(e => setLibErr('Không tải được thư viện từ CDN: ' + e.message));
+  }, []);
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setResults([]); setSummary(null); setSaved(false);
+
+    try {
+      setPhase('extracting'); setProgress('Đang giải nén ZIP (có thể nhiều lớp)…');
+      const pdfs = await extractAllPDFs(file);
+      if (!pdfs.length) throw new Error('Không tìm thấy file PDF nào trong ZIP');
+
+      setPhase('parsing');
+      const parsed = [];
+      for (let i = 0; i < pdfs.length; i++) {
+        setProgress(`Đọc PDF ${i + 1}/${pdfs.length}: ${pdfs[i].name}`);
+        const text   = await extractPDFText(pdfs[i].data);
+        const fields = extractInvoiceFields(text);
+        parsed.push({ ...pdfs[i], ...fields });
+      }
+
+      setPhase('matching'); setProgress('Đang đối chiếu với dữ liệu PVOIL trong DB…');
+      const invoices = parsed.map(p => ({ ky_hieu_hd: p.ky_hieu_hd, so_hd: p.so_hd, pdf_file: p.name }));
+      const res  = await fetch('/api/nhien-lieu/hoa-don', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoices, save: false }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+
+      const merged = json.results.map((r, i) => ({ ...r, data: parsed[i].data }));
+      setResults(merged);
+      setSummary(json.summary);
+      setPhase('done'); setProgress('');
+
+    } catch (err) {
+      setPhase('error'); setProgress(err.message);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const invoices = results.map(r => ({ ky_hieu_hd: r.ky_hieu_hd, so_hd: r.so_hd, pdf_file: r.pdf_file }));
+      const res  = await fetch('/api/nhien-lieu/hoa-don', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoices, save: true }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      setSaved(true);
+    } catch (err) {
+      alert('Lỗi lưu: ' + err.message);
+    } finally { setSaving(false); }
+  };
+
+  const handlePrintAll = async () => {
+    const toPrint = results.filter(r => r.matched && r.data);
+    if (!toPrint.length) { alert('Không có hóa đơn khớp để in'); return; }
+    setPrinting(true);
+    try {
+      const { PDFDocument } = window.PDFLib;
+      const mergedDoc = await PDFDocument.create();
+      for (const r of toPrint) {
+        try {
+          const doc   = await PDFDocument.load(r.data);
+          const pages = await mergedDoc.copyPages(doc, doc.getPageIndices());
+          pages.forEach(p => mergedDoc.addPage(p));
+        } catch (_) {}
+      }
+      const bytes = await mergedDoc.save();
+      const blob  = new Blob([bytes], { type: 'application/pdf' });
+      const url   = URL.createObjectURL(blob);
+      const win   = window.open(url, '_blank');
+      if (win) win.onload = () => { win.focus(); win.print(); };
+    } catch (err) { alert('Lỗi in: ' + err.message); }
+    finally { setPrinting(false); }
+  };
+
+  const handlePrintOne = (r) => {
+    if (!r.data) return;
+    const blob = new Blob([r.data], { type: 'application/pdf' });
+    const url  = URL.createObjectURL(blob);
+    const win  = window.open(url, '_blank');
+    if (win) win.onload = () => { win.focus(); win.print(); };
+  };
+
+  const displayed = filter === 'all' ? results
+    : filter === 'matched'   ? results.filter(r => r.matched)
+    : results.filter(r => !r.matched);
+
+  const isBusy = phase === 'extracting' || phase === 'parsing' || phase === 'matching';
+
+  if (libErr) return <div style={{ ...card, color:'#dc2626' }}>⚠️ {libErr}</div>;
+
+  return (
+    <div>
+      <div style={card}>
+        <div style={{ display:'flex', alignItems:'flex-start', gap:16, flexWrap:'wrap' }}>
+          <div style={{ flex:1, minWidth:260 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:'#1e293b', marginBottom:4 }}>
+              📦 Upload file ZIP chứa hóa đơn PDF
+            </div>
+            <div style={{ fontSize:12, color:'#64748b', lineHeight:1.6 }}>
+              Hỗ trợ ZIP nhiều lớp lồng nhau. Tự động giải nén → đọc text PDF
+              → trích <b>Ký hiệu</b> &amp; <b>Số</b> → đối chiếu dữ liệu PVOIL đã import.
+            </div>
+          </div>
+          <label style={{
+            ...btn('#2563eb'), display:'inline-flex', alignItems:'center', gap:6, flexShrink:0,
+            opacity: (libsReady && !isBusy) ? 1 : 0.5,
+            cursor:  (libsReady && !isBusy) ? 'pointer' : 'not-allowed',
+          }}>
+            {!libsReady ? '⏳ Đang tải thư viện…' : isBusy ? '⏳ Đang xử lý…' : '📦 Chọn file ZIP'}
+            <input type="file" accept=".zip" style={{ display:'none' }}
+              disabled={!libsReady || isBusy}
+              onChange={handleFile} />
+          </label>
+        </div>
+
+        {phase !== 'idle' && phase !== 'done' && (
+          <div style={{
+            marginTop:12, padding:'10px 14px', borderRadius:6, fontSize:13,
+            background: phase === 'error' ? '#fef2f2' : '#eff6ff',
+            color:      phase === 'error' ? '#dc2626' : '#1d4ed8',
+          }}>
+            {phase !== 'error' && '⏳ '}{progress}
+          </div>
+        )}
+      </div>
+
+      {phase === 'done' && summary && (
+        <div style={{ ...card, display:'flex', alignItems:'center', gap:20, flexWrap:'wrap' }}>
+          <div style={{ display:'flex', gap:24 }}>
+            {[
+              { v: summary.total,     c:'#1e293b', l:'Tổng PDF' },
+              { v: summary.matched,   c:'#16a34a', l:'Khớp' },
+              { v: summary.unmatched, c:'#dc2626', l:'Chưa khớp' },
+            ].map(({ v, c, l }) => (
+              <div key={l} style={{ textAlign:'center' }}>
+                <div style={{ fontSize:26, fontWeight:800, color:c }}>{v}</div>
+                <div style={{ fontSize:11, color:'#64748b' }}>{l}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginLeft:'auto', display:'flex', gap:8, flexWrap:'wrap' }}>
+            {['all','matched','unmatched'].map(f => (
+              <button key={f} onClick={() => setFilter(f)}
+                style={{ ...btn(filter === f ? '#1e40af' : '#94a3b8'), padding:'6px 12px', fontSize:12 }}>
+                {f === 'all' ? `Tất cả (${summary.total})` : f === 'matched' ? `✅ Khớp (${summary.matched})` : `❌ Chưa khớp (${summary.unmatched})`}
+              </button>
+            ))}
+            <button onClick={handlePrintAll} disabled={printing}
+              style={{ ...btn('#7c3aed'), padding:'6px 14px', fontSize:12 }}>
+              {printing ? '⏳ Đang in…' : `🖨 In ${summary.matched} HĐ khớp`}
+            </button>
+            <button onClick={handleSave} disabled={saving || saved}
+              style={{ ...btn(saved ? '#16a34a' : '#0891b2'), padding:'6px 14px', fontSize:12 }}>
+              {saved ? '✅ Đã lưu' : saving ? '⏳ Đang lưu…' : '💾 Lưu vào DB'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {displayed.length > 0 && (
+        <div style={{ ...card, padding:0, overflow:'hidden' }}>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+              <thead>
+                <tr style={{ background:'#f8fafc', borderBottom:'2px solid #e2e8f0' }}>
+                  {['#','Tên file PDF','Ký hiệu HĐ','Số HĐ','Trạng thái','Biển số xe','Lái xe','Số lít','Tháng','In'].map((h,i) => (
+                    <th key={h} style={{ padding:'10px 12px', textAlign:[7].includes(i)?'right':[4,9].includes(i)?'center':'left', color:'#64748b', fontWeight:700, whiteSpace:'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {displayed.map((r, i) => (
+                  <tr key={i} style={{ borderBottom:'1px solid #f1f5f9', background: r.matched ? 'white' : '#fff9f9' }}>
+                    <td style={{ padding:'8px 12px', color:'#9ca3af' }}>{i + 1}</td>
+                    <td style={{ padding:'8px 12px', fontFamily:'monospace', fontSize:11, maxWidth:220, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={r.pdf_file}>{r.pdf_file}</td>
+                    <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.ky_hieu_hd || <span style={{ color:'#fbbf24' }}>—</span>}</td>
+                    <td style={{ padding:'8px 12px', fontFamily:'monospace' }}>{r.so_hd || <span style={{ color:'#fbbf24' }}>—</span>}</td>
+                    <td style={{ padding:'8px 12px', textAlign:'center' }}><TagStatus matched={r.matched} /></td>
+                    <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.record?.bien_so || '—'}</td>
+                    <td style={{ padding:'8px 12px' }}>{r.record?.ten_tai_xe || '—'}</td>
+                    <td style={{ padding:'8px 12px', textAlign:'right' }}>{r.record?.so_luong_lit != null ? fmtNum(r.record.so_luong_lit, 2) : '—'}</td>
+                    <td style={{ padding:'8px 12px', color:'#64748b' }}>{r.record?.thang || '—'}</td>
+                    <td style={{ padding:'8px 12px', textAlign:'center' }}>
+                      {r.data && (
+                        <button onClick={() => handlePrintOne(r)}
+                          style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>🖨</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {phase === 'idle' && (
+        <div style={{ ...card, textAlign:'center', padding:56, color:'#94a3b8' }}>
+          <div style={{ fontSize:44, marginBottom:12 }}>📦</div>
+          <div style={{ fontSize:14, color:'#64748b' }}>Upload file ZIP để bắt đầu xử lý hóa đơn PDF</div>
+          <div style={{ fontSize:12, marginTop:6 }}>Hỗ trợ ZIP nhiều lớp lồng nhau · Tự động trích Ký hiệu &amp; Số · Đối chiếu PVOIL</div>
+        </div>
+      )}
+    </div>
+  );
+}
+ten_tai_xe || '—'}</td>
+                    <td style={{ padding:'8px 12px', textAlign:'right' }}>
+                      {r.record?.so_luong_lit != null ? fmtNum(r.record.so_luong_lit, 2) : '—'}
+                    </td>
+                    <td style={{ padding:'8px 12px', color:'#64748b' }}>{r.record?.thang || '—'}</td>
+                    <td style={{ padding:'8px 12px', textAlign:'center' }}>
+                      {r.data && (
+                        <button onClick={() => handlePrintOne(r)}
+                          style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>🖨</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {phase === 'idle' && (
+        <div style={{ ...card, textAlign:'center', padding:56, color:'#94a3b8' }}>
+          <div style={{ fontSize:44, marginBottom:12 }}>📦</div>
+          <div style={{ fontSize:14, color:'#64748b' }}>Upload file ZIP để bắt đầu xử lý hóa đơn PDF</div>
+          <div style={{ fontSize:12, marginTop:6 }}>Hỗ trợ ZIP nhiều lớp lồng nhau · Tự động trích Ký hiệu &amp; Số · Đối chiếu PVOIL</div>
         </div>
       )}
     </div>
