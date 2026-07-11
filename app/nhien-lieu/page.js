@@ -1342,16 +1342,17 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
               <input type="file" webkitdirectory="true" multiple onChange={handleFolder}
                 disabled={!libsReady} style={{ display:'none' }} />
             </label>
-            {/* ZIP (chỉ dùng nếu ZIP không chứa RAR bên trong) */}
+            {/* ZIP — upload output_pdf.zip từ script giải nén */}
             <label style={{ ...btn('#2563eb'), display:'inline-block', cursor:'pointer',
-              opacity: libsReady ? 1 : 0.5 }} title="Chỉ hỗ trợ ZIP thuần, không hỗ trợ RAR lồng nhau">
+              opacity: libsReady ? 1 : 0.5 }} title="Upload file output_pdf.zip tạo bởi giai-nen-hoadon.py">
               📦 Chọn ZIP
               <input type="file" accept=".zip" onChange={handleFile}
                 disabled={!libsReady} style={{ display:'none' }} />
             </label>
           </div>
-          <div style={{ fontSize:11, color:'#94a3b8' }}>
-            💡 Nếu archive có RAR: chạy <code>giai-nen-hoadon.py</code> trước
+          <div style={{ fontSize:11, color:'#64748b' }}>
+            💡 Bước 1: <code style={{background:'#f1f5f9',padding:'1px 4px',borderRadius:3}}>python giai-nen-hoadon.py "HD HH 06.zip"</code>
+            &nbsp;→ Bước 2: upload <strong>output_pdf.zip</strong>
           </div>
         </div>
         {phase === 'extracting' && (

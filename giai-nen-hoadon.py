@@ -1,117 +1,63 @@
 """
-Giải nén toàn bộ hóa đơn PDF từ archive (ZIP + RAR lồng nhau)
+Giải nén toàn bộ hóa đơn PDF từ archive (ZIP / RAR / 7z / v.v.)
+Dùng patoolib — tự động tìm WinRAR, 7-Zip, unrar trên máy.
+
 Cách dùng:
-  python giai-nen-hoadon.py "HD HH 062026.zip"   # hoặc .rar
+  python giai-nen-hoadon.py "HD HH 062026.zip"
   python giai-nen-hoadon.py "D:\\Downloads\\HD HH 062026.zip"
 
-Kết quả: thư mục "output_pdf" trong cùng thư mục với file archive
+Yêu cầu:
+  pip install patoolib
+
+Kết quả:
+  output_pdf/          <- thư mục chứa toàn bộ file PDF
+  output_pdf.zip       <- ZIP sạch để upload lên web app (tạo cạnh file gốc)
 """
 
-import sys, os, zipfile, io, shutil
-
-# Thử import rarfile (cần cài: pip install rarfile)
+import sys, os, shutil, zipfile
 try:
-    import rarfile
-    rarfile.UNRAR_TOOL = "unrar"   # Windows: C:\Program Files\WinRAR\UnRAR.exe
-    HAS_RAR = True
+    import patoolib
 except ImportError:
-    HAS_RAR = False
+    print("Thiếu thư viện patoolib. Chạy: pip install patoolib")
+    sys.exit(1)
 
-def extract_all(archive_path, out_dir):
-    """Giải nén đệ quy tất cả PDF từ archive (ZIP/RAR), bao gồm archive lồng nhau."""
-    collected = 0
-    skipped_rar = 0
 
-    def process_zip(zf, prefix=""):
-        nonlocal collected
-        for item in zf.infolist():
-            name = item.filename
-            lower = name.lower()
-            if lower.endswith('/'):        # thư mục
-                continue
-            basename = os.path.basename(name)
-            lower_base = basename.lower()
+def recursive_extract(folder_path):
+    """Giải nén đệ quy giống app.py — lặp cho đến khi không còn archive nào."""
+    changed = False
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            file_path = os.path.join(root, file)
+            if file.lower().endswith(('.zip', '.rar', '.7z', '.tar', '.gz', '.bz2')):
+                try:
+                    print(f"  → Giải nén: {file}")
+                    patoolib.extract_archive(file_path, outdir=root, verbosity=-1)
+                    os.remove(file_path)
+                    changed = True
+                except Exception as e:
+                    print(f"  ⚠ Lỗi giải nén {file}: {e}")
+    if changed:
+        recursive_extract(folder_path)
 
-            if lower_base.endswith('.pdf'):
-                data = zf.read(item)
-                safe = basename.replace('/', '_').replace('\\', '_')
-                dest = os.path.join(out_dir, safe)
+
+def collect_pdfs(src_dir, dest_dir):
+    """Thu thập tất cả PDF vào thư mục phẳng, tránh trùng tên."""
+    count = 0
+    for root, dirs, files in os.walk(src_dir):
+        for file in files:
+            if file.lower().endswith('.pdf'):
+                src_path = os.path.join(root, file)
+                dest_path = os.path.join(dest_dir, file)
                 # Tránh trùng tên
-                if os.path.exists(dest):
-                    base, ext = os.path.splitext(safe)
+                if os.path.exists(dest_path):
+                    base, ext = os.path.splitext(file)
                     i = 1
-                    while os.path.exists(dest):
-                        dest = os.path.join(out_dir, f"{base}_{i}{ext}")
+                    while os.path.exists(dest_path):
+                        dest_path = os.path.join(dest_dir, f"{base}_{i}{ext}")
                         i += 1
-                with open(dest, 'wb') as f:
-                    f.write(data)
-                collected += 1
-                print(f"  ✓ {basename}")
-
-            elif lower_base.endswith('.zip'):
-                data = zf.read(item)
-                inner = zipfile.ZipFile(io.BytesIO(data))
-                process_zip(inner, prefix=basename + "/")
-
-            elif lower_base.endswith('.rar') and HAS_RAR:
-                data = zf.read(item)
-                tmp = os.path.join(out_dir, '__tmp__.rar')
-                with open(tmp, 'wb') as f:
-                    f.write(data)
-                process_rar(tmp)
-                os.remove(tmp)
-
-    def process_rar(rar_path):
-        nonlocal collected, skipped_rar
-        if not HAS_RAR:
-            skipped_rar += 1
-            return
-        try:
-            with rarfile.RarFile(rar_path) as rf:
-                for item in rf.infolist():
-                    name = item.filename
-                    basename = os.path.basename(name)
-                    lower = basename.lower()
-                    if lower.endswith('.pdf'):
-                        data = rf.read(item)
-                        dest = os.path.join(out_dir, basename)
-                        if os.path.exists(dest):
-                            base, ext = os.path.splitext(basename)
-                            i = 1
-                            while os.path.exists(dest):
-                                dest = os.path.join(out_dir, f"{base}_{i}{ext}")
-                                i += 1
-                        with open(dest, 'wb') as f:
-                            f.write(data)
-                        collected += 1
-                        print(f"  ✓ {basename}")
-                    elif lower.endswith('.zip'):
-                        data = rf.read(item)
-                        inner = zipfile.ZipFile(io.BytesIO(data))
-                        process_zip(inner)
-                    elif lower.endswith('.rar'):
-                        data = rf.read(item)
-                        tmp = os.path.join(out_dir, '__tmp2__.rar')
-                        with open(tmp, 'wb') as f:
-                            f.write(data)
-                        process_rar(tmp)
-                        if os.path.exists(tmp):
-                            os.remove(tmp)
-        except Exception as e:
-            print(f"  ⚠ Lỗi đọc RAR {rar_path}: {e}")
-
-    # Đọc archive gốc
-    lower = archive_path.lower()
-    if lower.endswith('.zip'):
-        with zipfile.ZipFile(archive_path) as zf:
-            process_zip(zf)
-    elif lower.endswith('.rar'):
-        process_rar(archive_path)
-    else:
-        print(f"Không hỗ trợ định dạng: {archive_path}")
-        return 0, 0
-
-    return collected, skipped_rar
+                shutil.copy2(src_path, dest_path)
+                count += 1
+    return count
 
 
 if __name__ == '__main__':
@@ -124,21 +70,52 @@ if __name__ == '__main__':
         print(f"Không tìm thấy file: {src}")
         sys.exit(1)
 
-    out = os.path.join(os.path.dirname(os.path.abspath(src)), 'output_pdf')
-    if os.path.exists(out):
-        shutil.rmtree(out)
-    os.makedirs(out)
+    src_abs  = os.path.abspath(src)
+    base_dir = os.path.dirname(src_abs)
+    temp_dir = os.path.join(base_dir, '__tmp_extract__')
+    out_dir  = os.path.join(base_dir, 'output_pdf')
+    out_zip  = os.path.join(base_dir, 'output_pdf.zip')
 
-    print(f"Đang giải nén: {src}")
-    print(f"Thư mục kết quả: {out}")
+    # Dọn temp
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+    os.makedirs(temp_dir)
+
+    print(f"Đang giải nén: {src_abs}")
+
+    # Bước 1: giải nén archive gốc vào temp
+    try:
+        patoolib.extract_archive(src_abs, outdir=temp_dir, verbosity=-1)
+    except Exception as e:
+        print(f"Lỗi giải nén tệp đầu vào: {e}")
+        sys.exit(1)
+
+    # Bước 2: giải nén đệ quy tất cả archive bên trong
+    print("Đang giải nén các archive lồng nhau...")
+    recursive_extract(temp_dir)
+
+    # Bước 3: thu thập PDF
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
+    os.makedirs(out_dir)
+
+    print("Đang thu thập PDF...")
+    n = collect_pdfs(temp_dir, out_dir)
+
+    # Bước 4: tạo ZIP sạch
+    if os.path.exists(out_zip):
+        os.remove(out_zip)
+    with zipfile.ZipFile(out_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for file in os.listdir(out_dir):
+            if file.lower().endswith('.pdf'):
+                zf.write(os.path.join(out_dir, file), file)
+
+    # Dọn temp
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
     print()
-
-    n, skipped = extract_all(src, out)
-
+    print(f"✅ {n} file PDF")
+    print(f"   Thư mục: {out_dir}")
+    print(f"   ZIP upload: {out_zip}")
     print()
-    print(f"✅ Tổng cộng: {n} file PDF")
-    if skipped:
-        print(f"⚠  Bỏ qua {skipped} file RAR (cần cài rarfile + UnRAR)")
-        print("   pip install rarfile")
-        print("   Đặt UnRAR.exe vào PATH hoặc chỉnh rarfile.UNRAR_TOOL trong script")
-    print(f"👉 Thư mục PDF: {out}")
+    print("👉 Upload file output_pdf.zip lên web app để đối chiếu hóa đơn.")
