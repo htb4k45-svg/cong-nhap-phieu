@@ -1040,22 +1040,30 @@ async function pdfToText(arrayBuffer) {
 }
 
 // ── Parse ký hiệu + số HĐ từ text nội dung hóa đơn điện tử ──────────────────
+// PVOIL format (pdfplumber/pdf.js):
+//   'Ký hiệu: 1K26TDH'
+//   'GIÁ TRỊ GIA TĂNG 12142'   ← số HĐ nằm ĐÂY (layout PDF column)
+//   'Số:'                        ← rỗng vì số đã bị "hút" lên dòng trên
+// Khi join thành 1 dòng: "...1K26TDH GIÁ TRỊ GIA TĂNG 12142 Số: Bản thể hiện..."
 function parseInvoiceText(text) {
   const t = text.replace(/\s+/g, ' ');
 
-  // Ký hiệu HĐ: "Ký hiệu: K26TDH" / "Ký hiệu (Serial No.): K26T..." / "KHHDon: ..."
-  // Ký hiệu luôn bắt đầu bằng chữ cái và chứa chữ số
+  // 1. Ký hiệu: "Ký hiệu: 1K26TDH" → normalizeKyHieu → "K26TDH"
   let ky = null;
-  const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*(?:\([^)]*\))?\s*[:\-]?\s*([A-Z0-9]{2,20})/u)
-           || t.match(/KHH[Dd]on\s*[:\-]?\s*([A-Z0-9]{2,20})/);
+  const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*[:\-]?\s*([A-Z0-9\/]{3,20})/u);
   if (mKy) ky = normalizeKyHieu(mKy[1].trim());
 
-  // Số HĐ: "Số: 00012142" / "Số (No.): 12142" / "SHDon: 00012142"
-  // Ưu tiên số dài hơn (số HĐ thường 5-10 chữ số)
+  // 2. Số HĐ (PVOIL): số xuất hiện TRƯỚC "Số:" trong text đã join
+  //    Pattern: "{digits} Số:" — số liền ngay trước nhãn "Số:"
   let so = null;
-  const mSo = t.match(/\bS[ốo]\s*(?:\([^)]*\))?\s*[:\-]\s*(\d{4,12})/iu)
-           || t.match(/SH[Dd]on\s*[:\-]?\s*(\d{4,12})/);
-  if (mSo) so = mSo[1].trim();
+  const mBefore = t.match(/(\d{3,})\s+S[ốo]\s*[:\-]/iu);
+  if (mBefore) so = mBefore[1];
+
+  // 3. Fallback: "Số: {digits}" — format thông thường nếu không khớp pattern trên
+  if (!so) {
+    const mAfter = t.match(/\bS[ốo]\s*[:\-]\s*(\d{4,12})/iu);
+    if (mAfter) so = mAfter[1];
+  }
 
   return { ky_hieu_hd: ky || null, so_hd: so || null };
 }
@@ -1126,6 +1134,54 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
   };
 
   useEffect(() => { loadDB(thang); }, [thang]);
+
+  // Chọn thư mục đã giải nén → đọc tất cả PDF bên trong
+  const handleFolder = async (e) => {
+    const allFiles = Array.from(e.target.files);
+    const pdfs     = allFiles.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    if (!pdfs.length) { alert('Không tìm thấy file PDF nào trong thư mục đã chọn'); return; }
+    if (!libsReady)   { alert('Thư viện chưa sẵn sàng, thử lại sau vài giây'); return; }
+
+    setPhase('extracting');
+    setProgress('Tìm thấy ' + pdfs.length + ' file PDF, đang đọc nội dung...');
+    const newMap = {};
+    let failed   = 0;
+
+    for (let i = 0; i < pdfs.length; i++) {
+      const file = pdfs[i];
+      setProgress(`Đọc ${i + 1}/${pdfs.length}: ${file.name}`);
+      try {
+        const buf    = await file.arrayBuffer();
+        const text   = await pdfToText(buf);
+        const parsed = parseInvoiceText(text);
+
+        if (!parsed.ky_hieu_hd || !parsed.so_hd) {
+          console.warn('[HĐ folder] Không đọc được HĐ:', file.name,
+            '| text:', text.replace(/\s+/g,' ').slice(0, 150));
+          failed++;
+          continue;
+        }
+        const key = parsed.ky_hieu_hd + '|' + normSoHD(parsed.so_hd);
+        console.log('[HĐ folder]', file.name, '→', key);
+        newMap[key] = {
+          url: URL.createObjectURL(file),
+          name: file.name,
+          ky_hieu_hd: parsed.ky_hieu_hd,
+          so_hd: parsed.so_hd,
+        };
+      } catch (err) {
+        console.warn('[HĐ folder] Lỗi:', file.name, err.message);
+        failed++;
+      }
+    }
+
+    const ok = Object.keys(newMap).length;
+    console.log(`[HĐ folder] Tổng: ${pdfs.length} | Đọc được: ${ok} | Thất bại: ${failed}`);
+    setPdfMap(newMap);
+    setPhase('done');
+    setProgress(`Xong! ${ok}/${pdfs.length} hóa đơn` + (failed ? ` (${failed} không đọc được)` : ''));
+    e.target.value = '';
+  };
 
   // Giải nén ZIP → đọc text từ từng PDF → build pdfMap
   const handleFile = async (e) => {
@@ -1276,14 +1332,27 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
           <input type="month" value={thang} onChange={e => setThang(e.target.value)}
             style={{ ...input, fontSize:14 }} />
         </div>
-        <div>
-          <div style={{ fontSize:12, color:'#64748b', marginBottom:4 }}>Upload ZIP hóa đơn PDF</div>
-          <label style={{ ...btn('#2563eb'), display:'inline-block', cursor:'pointer',
-            opacity: libsReady ? 1 : 0.5 }}>
-            📦 Chọn file ZIP
-            <input type="file" accept=".zip" onChange={handleFile}
-              disabled={!libsReady} style={{ display:'none' }} />
-          </label>
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          <div style={{ fontSize:12, color:'#64748b' }}>Upload hóa đơn PDF</div>
+          <div style={{ display:'flex', gap:8 }}>
+            {/* Chọn thư mục đã giải nén (khuyến nghị) */}
+            <label style={{ ...btn('#16a34a'), display:'inline-block', cursor:'pointer',
+              opacity: libsReady ? 1 : 0.5 }} title="Giải nén archive ra thư mục trước, rồi chọn thư mục đó">
+              📂 Chọn thư mục
+              <input type="file" webkitdirectory="true" multiple onChange={handleFolder}
+                disabled={!libsReady} style={{ display:'none' }} />
+            </label>
+            {/* ZIP (chỉ dùng nếu ZIP không chứa RAR bên trong) */}
+            <label style={{ ...btn('#2563eb'), display:'inline-block', cursor:'pointer',
+              opacity: libsReady ? 1 : 0.5 }} title="Chỉ hỗ trợ ZIP thuần, không hỗ trợ RAR lồng nhau">
+              📦 Chọn ZIP
+              <input type="file" accept=".zip" onChange={handleFile}
+                disabled={!libsReady} style={{ display:'none' }} />
+            </label>
+          </div>
+          <div style={{ fontSize:11, color:'#94a3b8' }}>
+            💡 Nếu archive có RAR: chạy <code>giai-nen-hoadon.py</code> trước
+          </div>
         </div>
         {phase === 'extracting' && (
           <div style={{ fontSize:13, color:'#2563eb' }}>⏳ {progress}</div>
