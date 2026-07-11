@@ -290,23 +290,48 @@ function TabBaoCao({ pdfMap = {}, setPdfMap, cpMap = {} }) {
       };
       await scan(zip);
       console.log('[ZIP BaoCao] PDF:', pdfFiles.length, 'XML:', Object.keys(xmlMap).length);
+
+      // Pre-parse XML
+      const xmlData = {};
+      for (const [stem, entry] of Object.entries(xmlMap)) {
+        try {
+          const doc = new DOMParser().parseFromString(await entry.async('string'), 'text/xml');
+          const ky = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || null;
+          const so = doc.getElementsByTagName('SHDon')[0]?.textContent?.trim() || null;
+          if (ky && so) xmlData[stem] = { ky_hieu_hd: ky, so_hd: so };
+        } catch (e) { /* bỏ qua */ }
+      }
+
       const newMap = {};
       for (const { name, entry } of pdfFiles) {
-        const f = extractInvoiceFields('', name);
-        let ky_hieu_hd = f.ky_hieu_hd, so_hd = f.so_hd;
-        const stem = name.toLowerCase().replace(/\.pdf$/, '');
-        const xmlEntry = xmlMap[stem];
-        if (xmlEntry) {
-          const doc = new DOMParser().parseFromString(await xmlEntry.async('string'), 'text/xml');
-          ky_hieu_hd = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || ky_hieu_hd;
+        try {
+          const buf  = await entry.async('arraybuffer');
+          const stem = name.toLowerCase().replace(/\.pdf$/, '');
+          let ky_hieu_hd = null, so_hd = null;
+
+          if (xmlData[stem]) {
+            ({ ky_hieu_hd, so_hd } = xmlData[stem]);
+          } else {
+            // Fallback: đọc text từ PDF
+            const parsed = parseInvoiceText(await pdfToText(buf));
+            ky_hieu_hd = parsed.ky_hieu_hd;
+            so_hd      = parsed.so_hd;
+          }
+
+          if (!ky_hieu_hd || !so_hd) {
+            console.warn('[ZIP BaoCao] Không xác định HĐ:', name);
+            continue;
+          }
+          const key = ky_hieu_hd + '|' + normSoHD(so_hd);
+          console.log('[ZIP BaoCao HĐ]', name, '→ key:', key);
+          const blob = new Blob([buf], { type: 'application/pdf' });
+          newMap[key] = { url: URL.createObjectURL(blob), name, ky_hieu_hd, so_hd };
+        } catch (err) {
+          console.warn('[ZIP BaoCao] Skip:', name, err.message);
         }
-        const key = (ky_hieu_hd || '') + '|' + normSoHD(so_hd);
-        console.log('[ZIP BaoCao HĐ]', name, '→ key:', key);
-        const blob = new Blob([await entry.async('arraybuffer')], { type: 'application/pdf' });
-        newMap[key] = { url: URL.createObjectURL(blob), name, ky_hieu_hd, so_hd };
       }
       setPdfMap(newMap);
-      setZipStatus('done:' + Object.keys(newMap).length);
+      setZipStatus('done:' + Object.keys(newMap).length + '/' + pdfFiles.length);
     } catch (err) {
       setZipStatus('');
       alert('Lỗi xử lý ZIP: ' + err.message);
@@ -1016,38 +1041,49 @@ function TabImportKm() {
   );
 }
 
-function extractInvoiceFields(text, filename) {
-  let ky_hieu_hd = null;
-  let so_hd      = null;
-  let mst_file   = null;
 
-  // 1. Parse từ tên file (ưu tiên, ổn định hơn)
-  if (filename) {
-    const stem  = filename.replace(/\.pdf$/i, '').split(/[/\\]/).pop();
-    const parts = stem.split('_');
-    if (parts.length >= 4) {
-      mst_file   = parts[0];
-      ky_hieu_hd = parts[2];
-      so_hd      = parts[3];
-    } else if (parts.length === 3) {
-      mst_file   = parts[0];
-      ky_hieu_hd = parts[1];
-      so_hd      = parts[2];
+// ── Extract text từ PDF (trang 1-2) dùng pdf.js ──────────────────────────────
+async function pdfToText(arrayBuffer) {
+  if (!window.pdfjsLib) return '';
+  try {
+    const pdf  = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pages = Math.min(pdf.numPages, 2);
+    let text = '';
+    for (let i = 1; i <= pages; i++) {
+      const page    = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      text += content.items.map(it => it.str).join(' ') + ' ';
     }
+    return text;
+  } catch (e) {
+    console.warn('[pdfToText]', e.message);
+    return '';
+  }
+}
+
+// ── Parse ký hiệu + số HĐ từ text nội dung hóa đơn điện tử ──────────────────
+function parseInvoiceText(text) {
+  const t = text.replace(/\s+/g, ' ');
+
+  // Ký hiệu HĐ: "Ký hiệu: K26TDH" / "Ký hiệu (Serial No.): K26T..." / "KHHDon: ..."
+  // Ký hiệu luôn bắt đầu bằng chữ cái và chứa chữ số
+  let ky = null;
+  const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*(?:\([^)]*\))?\s*[:\-]?\s*([A-Z0-9]{2,20})/u)
+           || t.match(/KHH[Dd]on\s*[:\-]?\s*([A-Z0-9]{2,20})/);
+  if (mKy) {
+    ky = mKy[1].trim();
+    // Bỏ mẫu số prefix dạng "1/" hoặc chữ số đầu nếu có
+    if (/^\d+[\/]/.test(ky)) ky = ky.replace(/^\d+\//, '');
   }
 
-  // 2. Fallback: parse từ nội dung PDF text
-  if (!ky_hieu_hd && text) {
-    const t   = text.replace(/\s+/g, ' ');
-    const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*(?:\([^)]*\))?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\/\-]{1,20})/u);
-    const mSo = t.match(/\bS[oố]\b\s*(?:h[oó]a?\s*[dđ][oơ]n\s*)?(?:\([^)]*\))?\s*[:\-]?\s*(\d{4,12})/iu);
-    let kh = mKy ? mKy[1].trim() : null;
-    if (kh && /^\d/.test(kh)) kh = kh.replace(/^\d+/, ''); // bỏ mẫu số prefix
-    if (!ky_hieu_hd) ky_hieu_hd = kh;
-    if (!so_hd)      so_hd      = mSo ? mSo[1].trim() : null;
-  }
+  // Số HĐ: "Số: 00012142" / "Số (No.): 12142" / "SHDon: 00012142"
+  // Ưu tiên số dài hơn (số HĐ thường 5-10 chữ số)
+  let so = null;
+  const mSo = t.match(/\bS[ốo]\s*(?:\([^)]*\))?\s*[:\-]\s*(\d{4,12})/iu)
+           || t.match(/SH[Dd]on\s*[:\-]?\s*(\d{4,12})/);
+  if (mSo) so = mSo[1].trim();
 
-  return { ky_hieu_hd, so_hd, mst_file };
+  return { ky_hieu_hd: ky || null, so_hd: so || null };
 }
 
 // Chuẩn hoá số HĐ: bỏ leading zeros để so sánh ("00452244" → "452244")
@@ -1059,8 +1095,10 @@ function normSoHD(s) {
 
 // ── CDN constants ─────────────────────────────────────────────────────────────
 const CDN = {
-  JSZIP:  'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
-  PDFLIB: 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
+  JSZIP:      'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+  PDFLIB:     'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
+  PDFJS:      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+  PDFJS_W:    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
 };
 
 // ── TabHoaDonPDF ──────────────────────────────────────────────────────────────
@@ -1074,7 +1112,7 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
   const [dbLoading, setDbLoading]= useState(false);
   const [libsReady, setLibsReady]= useState(false);
 
-  // Load CDN libs một lần (JSZip + PDFLib, không cần PDF.js)
+  // Load CDN libs: JSZip + PDFLib + PDF.js
   useEffect(() => {
     const load = (src) => new Promise((res, rej) => {
       if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
@@ -1084,7 +1122,12 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
     });
     load(CDN.JSZIP)
       .then(() => load(CDN.PDFLIB))
-      .then(() => setLibsReady(true))
+      .then(() => load(CDN.PDFJS))
+      .then(() => {
+        // Cấu hình pdf.js worker
+        if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.PDFJS_W;
+        setLibsReady(true);
+      })
       .catch(err => console.error('CDN load error:', err));
   }, []);
 
@@ -1147,61 +1190,68 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
 
       if (pdfFiles.length === 0) { setPhase('idle'); alert('Không tìm thấy file PDF trong ZIP'); return; }
 
-      // Log vài tên file đầu để debug format
-      console.log('[HĐ ZIP] Mẫu tên file PDF (5 đầu):', pdfFiles.slice(0, 5).map(f => f.name));
-      console.log('[HĐ ZIP] Mẫu tên file XML (5 đầu):', Object.keys(xmlMap).slice(0, 5));
+      console.log('[HĐ ZIP] PDF:', pdfFiles.length, 'XML:', Object.keys(xmlMap).length);
+
+      // Pre-parse tất cả XML (nếu có)
+      const xmlData = {};  // stem → { ky_hieu_hd, so_hd }
+      for (const [stem, entry] of Object.entries(xmlMap)) {
+        try {
+          const doc = new DOMParser().parseFromString(await entry.async('string'), 'text/xml');
+          const ky = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || null;
+          const so = doc.getElementsByTagName('SHDon')[0]?.textContent?.trim() || null;
+          if (ky && so) xmlData[stem] = { ky_hieu_hd: ky, so_hd: so };
+        } catch (e) { /* bỏ qua XML lỗi */ }
+      }
 
       setProgress('Xử lý ' + pdfFiles.length + ' file PDF...');
       const newMap = {};
+      let fromXml = 0, fromPdf = 0, failed = 0;
 
       for (let i = 0; i < pdfFiles.length; i++) {
         const { name, entry } = pdfFiles[i];
         setProgress('Xử lý ' + (i + 1) + '/' + pdfFiles.length + ': ' + name);
         try {
-          let ky_hieu_hd = null, so_hd = null;
-
-          // Tên file chứa số HĐ đầy đủ (kể cả số 0 đầu, vd: 00452248)
-          const f = extractInvoiceFields('', name);
-
-          // Ưu tiên đọc ký hiệu HĐ từ XML (đáng tin hơn tên file)
-          // Số HĐ lấy từ tên file để giữ nguyên số 0 đầu
+          const buf  = await entry.async('arraybuffer');
           const stem = name.toLowerCase().replace(/\.pdf$/, '');
-          const xmlEntry = xmlMap[stem];
-          if (xmlEntry) {
-            try {
-              const xmlText = await xmlEntry.async('string');
-              const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-              // getElementsByTagName hoạt động đúng với XML có namespace (querySelector không)
-              ky_hieu_hd = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || f.ky_hieu_hd;
-              so_hd      = f.so_hd || doc.getElementsByTagName('SHDon')[0]?.textContent?.trim() || null;
-              console.log('[HĐ]', name, '→ KyHieu:', ky_hieu_hd, 'SoHD:', so_hd);
-            } catch (xmlErr) {
-              console.warn('XML parse error:', name, xmlErr);
-              ky_hieu_hd = f.ky_hieu_hd;
-              so_hd      = f.so_hd;
-            }
+
+          let ky_hieu_hd = null, so_hd = null, src = '';
+
+          // Ưu tiên 1: XML đi kèm (đáng tin nhất)
+          if (xmlData[stem]) {
+            ({ ky_hieu_hd, so_hd } = xmlData[stem]);
+            src = 'XML';
+            fromXml++;
           } else {
-            // Không có XML → dùng tên file
-            ky_hieu_hd = f.ky_hieu_hd;
-            so_hd      = f.so_hd;
+            // Ưu tiên 2: Đọc text từ nội dung file PDF
+            const text = await pdfToText(buf);
+            const parsed = parseInvoiceText(text);
+            ky_hieu_hd = parsed.ky_hieu_hd;
+            so_hd      = parsed.so_hd;
+            src = 'PDF';
+            if (ky_hieu_hd && so_hd) fromPdf++;
+            else failed++;
           }
 
-          const data = await entry.async('arraybuffer');
-          const blob = new Blob([data], { type: 'application/pdf' });
-          const key  = (ky_hieu_hd || '') + '|' + normSoHD(so_hd);
+          if (!ky_hieu_hd || !so_hd) {
+            console.warn('[HĐ] Không xác định được HĐ:', name, { ky_hieu_hd, so_hd });
+            failed++;
+            continue;
+          }
+          const key = ky_hieu_hd + '|' + normSoHD(so_hd);
+          console.log('[HĐ]', name, '→', key, '(' + src + ')');
+          const blob = new Blob([buf], { type: 'application/pdf' });
           newMap[key] = { url: URL.createObjectURL(blob), name, ky_hieu_hd, so_hd };
         } catch (err) {
-          console.warn('Skip PDF:', name, err.message);
+          console.warn('[HĐ] Skip:', name, err.message);
+          failed++;
         }
       }
 
-      const total   = pdfFiles.length;
       const success = Object.keys(newMap).length;
-      console.log('[HĐ ZIP] tổng PDF:', total, '| thành công:', success, '| thất bại:', total - success);
-      console.log('[HĐ ZIP] pdfMap keys:', Object.keys(newMap));
+      console.log('[HĐ ZIP] XML:', fromXml, '| PDF text:', fromPdf, '| thất bại:', failed);
       setPdfMap(newMap);
       setPhase('done');
-      setProgress('Xong! ' + success + '/' + total + ' PDF đã xử lý.');
+      setProgress(`Xong! ${success}/${pdfFiles.length} PDF (XML:${fromXml} / PDF text:${fromPdf} / lỗi:${failed})`);
     } catch (err) {
       setPhase('idle');
       alert('Lỗi xử lý ZIP: ' + err.message);
@@ -1627,4 +1677,48 @@ function TabChiPhi({ cpMap, setCpMap }) {
                 <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
                   {['Biển số','NB - Cầu đường','NB - Bến','NB - Bốc xếp',
                     'Tỉnh - Cầu đường','Tỉnh - Bến','Tỉnh - Bốc xếp','Rửa xe','Tổng CP'].map((h,i) => (
-                    <th key={i} style={{ padding: '7px 10px', textAlign: i > 0 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>{h}<
+                    <th key={i} style={{ padding: '7px 10px', textAlign: i > 0 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(preview).map(([bs, cp], i) => {
+                  const total = Object.values(cp).reduce((s,v) => s+(v||0), 0);
+                  return (
+                    <tr key={bs} style={{ borderBottom: '1px solid #f1f5f9', background: i % 2 === 0 ? 'white' : '#f8fafc' }}>
+                      <td style={{ padding: '6px 10px', fontWeight: 600, color: '#2563eb' }}>{bs}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_caudong)}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_ben)}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_bocxep)}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_caudong)}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_ben)}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_bocxep)}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_ruaxe)}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#d97706' }}>{fmtNum(total)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Hướng dẫn format file */}
+      <div style={{ ...card, background: '#fffbeb', border: '1px solid #fcd34d' }}>
+        <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#92400e' }}>📋 Định dạng file Excel chi phí phát sinh</h4>
+        <p style={{ fontSize: 12, color: '#78350f', margin: 0, lineHeight: 1.6 }}>
+          File cần có cột <b>Biển số</b> và các cột chi phí. Hệ thống tự phát hiện header (kể cả 2 dòng header gộp ô).
+          Tên cột cần chứa từ khóa:<br/>
+          — <b>Nội bộ + Cầu đường</b>: lệ phí cầu đường chuyến nội bộ<br/>
+          — <b>Nội bộ + Bến</b>: phí vào bến nội bộ<br/>
+          — <b>Nội bộ + Bốc</b>: phí bốc xếp nội bộ<br/>
+          — <b>Tỉnh + Cầu đường</b>: lệ phí cầu đường chuyến tỉnh<br/>
+          — <b>Tỉnh + Bến</b>: phí vào bến tỉnh<br/>
+          — <b>Tỉnh + Bốc</b>: phí bốc xếp tỉnh<br/>
+          — <b>Rửa</b>: chi phí rửa xe
+        </p>
+      </div>
+    </div>
+  );
+}
