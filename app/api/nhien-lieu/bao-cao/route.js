@@ -117,13 +117,4 @@ export async function GET(request) {
     const summary = {
       tong_xe:      rows.length,
       xe_vuot_dm:   rows.filter(r => r.vuot_dm).length,
-      tong_lit_do:  +rows.reduce((s, r) => s + r.lit_do, 0).toFixed(2),
-      tong_km:      rows.reduce((s, r) => s + r.km_thuc, 0),
-      tong_tien:    rows.reduce((s, r) => s + r.tong_dt, 0),
-    };
-
-    return NextResponse.json({ thang, summary, rows, detail });
-  } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
-}
+      

@@ -1147,6 +1147,10 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
 
       if (pdfFiles.length === 0) { setPhase('idle'); alert('Không tìm thấy file PDF trong ZIP'); return; }
 
+      // Log vài tên file đầu để debug format
+      console.log('[HĐ ZIP] Mẫu tên file PDF (5 đầu):', pdfFiles.slice(0, 5).map(f => f.name));
+      console.log('[HĐ ZIP] Mẫu tên file XML (5 đầu):', Object.keys(xmlMap).slice(0, 5));
+
       setProgress('Xử lý ' + pdfFiles.length + ' file PDF...');
       const newMap = {};
 
@@ -1191,9 +1195,13 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
         }
       }
 
+      const total   = pdfFiles.length;
+      const success = Object.keys(newMap).length;
+      console.log('[HĐ ZIP] tổng PDF:', total, '| thành công:', success, '| thất bại:', total - success);
+      console.log('[HĐ ZIP] pdfMap keys:', Object.keys(newMap));
       setPdfMap(newMap);
       setPhase('done');
-      setProgress('Xong! ' + Object.keys(newMap).length + ' PDF đã xử lý.');
+      setProgress('Xong! ' + success + '/' + total + ' PDF đã xử lý.');
     } catch (err) {
       setPhase('idle');
       alert('Lỗi xử lý ZIP: ' + err.message);
@@ -1340,6 +1348,41 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
                 {f === 'all' ? 'Tất cả' : f === 'co' ? 'Có PDF' : 'Chưa có PDF'}
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Debug: so sánh key khi không khớp */}
+      {Object.keys(pdfMap).length > 0 && matchedKeys.size === 0 && dbRecs?.length > 0 && (
+        <div style={{ ...card, background:'#fef3c7', border:'1px solid #f59e0b', fontSize:12 }}>
+          <strong>⚠️ Debug: Key trong pdfMap không khớp DB</strong>
+          <div style={{ marginTop:6, display:'flex', gap:32 }}>
+            <div>
+              <div style={{ fontWeight:600, color:'#92400e', marginBottom:4 }}>
+                PDF keys (từ ZIP, tối đa 5):
+              </div>
+              {Object.keys(pdfMap).slice(0, 5).map(k => (
+                <div key={k} style={{ marginBottom:2 }}>
+                  <span style={{ fontFamily:'monospace', color:'#1e40af' }}>{k || '(rỗng)'}</span>
+                  <span style={{ color:'#92400e', marginLeft:6, fontSize:11 }}>
+                    ← {pdfMap[k]?.name}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div style={{ fontWeight:600, color:'#92400e', marginBottom:4 }}>
+                DB keys (tối đa 5):
+              </div>
+              {dbRecs.slice(0, 5).map(r => {
+                const k = (r.ky_hieu_hd || '') + '|' + normSoHD(r.so_hd);
+                return (
+                  <div key={r.id} style={{ fontFamily:'monospace', color:'#166534' }}>
+                    {k} <span style={{ color:'#6b7280' }}>({r.ky_hieu_hd} / {r.so_hd})</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -1584,48 +1627,4 @@ function TabChiPhi({ cpMap, setCpMap }) {
                 <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
                   {['Biển số','NB - Cầu đường','NB - Bến','NB - Bốc xếp',
                     'Tỉnh - Cầu đường','Tỉnh - Bến','Tỉnh - Bốc xếp','Rửa xe','Tổng CP'].map((h,i) => (
-                    <th key={i} style={{ padding: '7px 10px', textAlign: i > 0 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(preview).map(([bs, cp], i) => {
-                  const total = Object.values(cp).reduce((s,v) => s+(v||0), 0);
-                  return (
-                    <tr key={bs} style={{ borderBottom: '1px solid #f1f5f9', background: i % 2 === 0 ? 'white' : '#f8fafc' }}>
-                      <td style={{ padding: '6px 10px', fontWeight: 600, color: '#2563eb' }}>{bs}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_caudong)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_ben)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_bocxep)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_caudong)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_ben)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_bocxep)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_ruaxe)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#d97706' }}>{fmtNum(total)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Hướng dẫn format file */}
-      <div style={{ ...card, background: '#fffbeb', border: '1px solid #fcd34d' }}>
-        <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#92400e' }}>📋 Định dạng file Excel chi phí phát sinh</h4>
-        <p style={{ fontSize: 12, color: '#78350f', margin: 0, lineHeight: 1.6 }}>
-          File cần có cột <b>Biển số</b> và các cột chi phí. Hệ thống tự phát hiện header (kể cả 2 dòng header gộp ô).
-          Tên cột cần chứa từ khóa:<br/>
-          — <b>Nội bộ + Cầu đường</b>: lệ phí cầu đường chuyến nội bộ<br/>
-          — <b>Nội bộ + Bến</b>: phí vào bến nội bộ<br/>
-          — <b>Nội bộ + Bốc</b>: phí bốc xếp nội bộ<br/>
-          — <b>Tỉnh + Cầu đường</b>: lệ phí cầu đường chuyến tỉnh<br/>
-          — <b>Tỉnh + Bến</b>: phí vào bến tỉnh<br/>
-          — <b>Tỉnh + Bốc</b>: phí bốc xếp tỉnh<br/>
-          — <b>Rửa</b>: chi phí rửa xe
-        </p>
-      </div>
-    </div>
-  );
-}
+                    <th key={i} style={{ padding: '7px 10px', textAlign: i > 0 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>{h}<
