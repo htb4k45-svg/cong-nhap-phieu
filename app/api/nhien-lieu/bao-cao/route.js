@@ -33,7 +33,7 @@ export async function GET(request) {
     // ── 3. Tổng hợp giao dịch theo biển số ─────────────────────────────────
     let gdQuery = supabase
       .from('nhien_lieu_gd')
-      .select('bien_so, so_luong_lit, tien_hang_co_ck, tong_dt_co_ck, mat_hang')
+      .select('bien_so, so_luong_lit, tien_hang_co_ck, tong_dt_co_ck, mat_hang, ky_hieu_hd')
       .eq('thang', thang);
     if (bienSo) gdQuery = gdQuery.eq('bien_so', bienSo);
 
@@ -44,11 +44,15 @@ export async function GET(request) {
     const gdMap = {};
     for (const r of (gdRows || [])) {
       if (!gdMap[r.bien_so]) {
-        gdMap[r.bien_so] = { lit_do: 0, tien_hang: 0, tong_dt: 0, mat_hang_set: new Set() };
+        gdMap[r.bien_so] = { lit_do: 0, tien_hang: 0, tong_dt: 0, pvoil_dt: 0, cash_dt: 0, mat_hang_set: new Set() };
       }
-      gdMap[r.bien_so].lit_do     += r.so_luong_lit || 0;
-      gdMap[r.bien_so].tien_hang  += r.tien_hang_co_ck || 0;
-      gdMap[r.bien_so].tong_dt    += r.tong_dt_co_ck || 0;
+      const tien = r.tong_dt_co_ck || 0;
+      gdMap[r.bien_so].lit_do    += r.so_luong_lit || 0;
+      gdMap[r.bien_so].tien_hang += r.tien_hang_co_ck || 0;
+      gdMap[r.bien_so].tong_dt   += tien;
+      // Phân loại PVOil (có ky_hieu_hd) vs Tiền mặt
+      if (r.ky_hieu_hd) gdMap[r.bien_so].pvoil_dt += tien;
+      else               gdMap[r.bien_so].cash_dt  += tien;
       if (r.mat_hang) gdMap[r.bien_so].mat_hang_set.add(r.mat_hang.split(' ')[0]);
     }
 
@@ -104,6 +108,8 @@ export async function GET(request) {
         vuot_dm,
         tien_hang:     +gd.tien_hang.toFixed(0),
         tong_dt:       +gd.tong_dt.toFixed(0),
+        pvoil_dt:      +gd.pvoil_dt.toFixed(0),
+        cash_dt:       +gd.cash_dt.toFixed(0),
         mat_hang:      [...gd.mat_hang_set].join(', ') || '—',
       };
     });
