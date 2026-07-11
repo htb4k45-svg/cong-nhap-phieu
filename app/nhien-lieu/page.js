@@ -296,7 +296,7 @@ function TabBaoCao({ pdfMap = {}, setPdfMap, cpMap = {} }) {
       for (const [stem, entry] of Object.entries(xmlMap)) {
         try {
           const doc = new DOMParser().parseFromString(await entry.async('string'), 'text/xml');
-          const ky = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || null;
+          const ky = normalizeKyHieu(doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim());
           const so = doc.getElementsByTagName('SHDon')[0]?.textContent?.trim() || null;
           if (ky && so) xmlData[stem] = { ky_hieu_hd: ky, so_hd: so };
         } catch (e) { /* bỏ qua */ }
@@ -1042,6 +1042,12 @@ function TabImportKm() {
 }
 
 
+// ── Chuẩn hoá ký hiệu HĐ: bỏ mẫu số prefix ("1K26TDH" → "K26TDH", "1/K26TDH" → "K26TDH")
+function normalizeKyHieu(ky) {
+  if (!ky) return null;
+  return ky.replace(/^\d+[\/]?/, '').trim() || null;
+}
+
 // ── Extract text từ PDF (trang 1-2) dùng pdf.js ──────────────────────────────
 async function pdfToText(arrayBuffer) {
   if (!window.pdfjsLib) return '';
@@ -1070,11 +1076,7 @@ function parseInvoiceText(text) {
   let ky = null;
   const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*(?:\([^)]*\))?\s*[:\-]?\s*([A-Z0-9]{2,20})/u)
            || t.match(/KHH[Dd]on\s*[:\-]?\s*([A-Z0-9]{2,20})/);
-  if (mKy) {
-    ky = mKy[1].trim();
-    // Bỏ mẫu số prefix dạng "1/" hoặc chữ số đầu nếu có
-    if (/^\d+[\/]/.test(ky)) ky = ky.replace(/^\d+\//, '');
-  }
+  if (mKy) ky = normalizeKyHieu(mKy[1].trim());
 
   // Số HĐ: "Số: 00012142" / "Số (No.): 12142" / "SHDon: 00012142"
   // Ưu tiên số dài hơn (số HĐ thường 5-10 chữ số)
@@ -1197,7 +1199,7 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
       for (const [stem, entry] of Object.entries(xmlMap)) {
         try {
           const doc = new DOMParser().parseFromString(await entry.async('string'), 'text/xml');
-          const ky = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || null;
+          const ky = normalizeKyHieu(doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim());
           const so = doc.getElementsByTagName('SHDon')[0]?.textContent?.trim() || null;
           if (ky && so) xmlData[stem] = { ky_hieu_hd: ky, so_hd: so };
         } catch (e) { /* bỏ qua XML lỗi */ }
