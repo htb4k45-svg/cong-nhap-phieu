@@ -289,16 +289,19 @@ function TabBaoCao({ pdfMap = {}, setPdfMap, cpMap = {} }) {
         for (const s of subs) await scan(await window.JSZip.loadAsync(await s.async('arraybuffer')));
       };
       await scan(zip);
+      console.log('[ZIP BaoCao] PDF:', pdfFiles.length, 'XML:', Object.keys(xmlMap).length);
       const newMap = {};
       for (const { name, entry } of pdfFiles) {
         const f = extractInvoiceFields('', name);
         let ky_hieu_hd = f.ky_hieu_hd, so_hd = f.so_hd;
-        const xmlEntry = xmlMap[name.toLowerCase().replace(/\.pdf$/, '')];
+        const stem = name.toLowerCase().replace(/\.pdf$/, '');
+        const xmlEntry = xmlMap[stem];
         if (xmlEntry) {
           const doc = new DOMParser().parseFromString(await xmlEntry.async('string'), 'text/xml');
           ky_hieu_hd = doc.getElementsByTagName('KHHDon')[0]?.textContent?.trim() || ky_hieu_hd;
         }
         const key = (ky_hieu_hd || '') + '|' + normSoHD(so_hd);
+        console.log('[ZIP BaoCao HĐ]', name, '→ key:', key);
         const blob = new Blob([await entry.async('arraybuffer')], { type: 'application/pdf' });
         newMap[key] = { url: URL.createObjectURL(blob), name, ky_hieu_hd, so_hd };
       }
@@ -332,10 +335,13 @@ function TabBaoCao({ pdfMap = {}, setPdfMap, cpMap = {} }) {
     setCache(c => ({ ...c, [bien_so]: { rows: null, loading: true } }));
     try {
       const res  = await fetch(`/api/nhien-lieu/bao-cao?thang=${thang}&bien_so=${encodeURIComponent(bien_so)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
+      if (json.error) throw new Error(json.error);
       setCache(c => ({ ...c, [bien_so]: { rows: json.detail || [], loading: false } }));
-    } catch {
-      setCache(c => ({ ...c, [bien_so]: { rows: [], loading: false } }));
+    } catch (err) {
+      console.error('[toggleExpand]', bien_so, err);
+      setCache(c => ({ ...c, [bien_so]: { rows: [], loading: false, error: err.message } }));
     }
   };
 
@@ -552,6 +558,7 @@ function TabBaoCao({ pdfMap = {}, setPdfMap, cpMap = {} }) {
 function InlineDetail({ summaryRow: r, det, thang, pdfMap = {}, cpMap = {} }) {
   const rows = det?.rows || [];
   const isLoading = det?.loading !== false;
+  const detError  = det?.error || null;
 
   const exportThis = () => {
     if (!rows.length) return;
@@ -645,6 +652,7 @@ function InlineDetail({ summaryRow: r, det, thang, pdfMap = {}, cpMap = {} }) {
       </div>
 
       {isLoading && <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: 13 }}>Đang tải giao dịch...</div>}
+      {detError && <div style={{ padding: '10px 16px', color: '#dc2626', fontSize: 13 }}>❌ Lỗi tải giao dịch: {detError}</div>}
 
       {!isLoading && (
         <div style={{ overflowX: 'auto', maxHeight: 340 }}>

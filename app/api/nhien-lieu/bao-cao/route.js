@@ -78,7 +78,7 @@ export async function GET(request) {
     const rows = [...allPlates].sort().map(bs => {
       const xe  = xeMap[bs] || { bien_so: bs };
       const km  = kmMap[bs] || {};
-      const gd  = gdMap[bs] || { lit_do: 0, tien_hang: 0, tong_dt: 0, mat_hang_set: new Set() };
+      const gd  = gdMap[bs] || { lit_do: 0, tien_hang: 0, tong_dt: 0, pvoil_dt: 0, cash_dt: 0, mat_hang_set: new Set() };
 
       const km_thuc      = (km.km_cuoi || 0) - (km.km_dau || 0);
       const lit_do       = gd.lit_do;
