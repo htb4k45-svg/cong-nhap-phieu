@@ -7,9 +7,6 @@
  * Gửi TẤT CẢ PDF kể cả không parse được
  */
 
-export const maxDuration = 60; // Vercel: cho phép tối đa 60s
-export const dynamic    = 'force-dynamic';
-
 import { join }       from 'path';
 import { tmpdir }     from 'os';
 import { mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync } from 'fs';
@@ -17,6 +14,9 @@ import { execFile }   from 'child_process';
 import { promisify }  from 'util';
 import { randomUUID } from 'crypto';
 import { createAdminClient } from '@/lib/supabase';
+
+export const maxDuration = 60; // Vercel: cho phép tối đa 60s
+export const dynamic    = 'force-dynamic';
 
 const execFileAsync = promisify(execFile);
 

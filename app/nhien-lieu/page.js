@@ -1,5 +1,6 @@
 'use client';
 import { useState, useRef, useEffect, useCallback, forwardRef } from 'react';
+import { supabase } from '@/lib/supabase';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -656,7 +657,6 @@ export default function NhienLieuPage() {
         if (archFile.size > 3.5 * 1024 * 1024) {
           // File lớn: upload thẳng lên Supabase Storage (bypass Vercel 4.5MB limit)
           log('📤 File lớn, đang upload lên Supabase Storage...');
-          const { supabase } = await import('@/lib/supabase');
           const ext = archFile.name.split('.').pop();
           const storageKey = `archives/tmp_${thang}_${Date.now()}.${ext}`;
           const { error: stErr } = await supabase.storage
