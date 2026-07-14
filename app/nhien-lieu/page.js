@@ -59,62 +59,82 @@ function parsePvoilExcel(wb, XLSX) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = sheetToRows(ws, XLSX);
   const hi = findHeader(rows);
-  const hdr = (rows[hi] || []).map(c => c == null ? '' : String(c));
+
+  // Normalize header: bỏ \n, trim — xử lý ô Excel có xuống dòng
+  const hdr = (rows[hi] || []).map(c =>
+    c == null ? '' : String(c).replace(/\n/g, ' ').replace(/\s+/g, ' ').trim()
+  );
 
   const C = {
-    ngay_gd:        hdr.findIndex(h => /ng[aà]y\s*g[dt]/i.test(h)),
-    so_gd:          hdr.findIndex(h => /s[ốo]\s*g[dt]/i.test(h)),
-    tai_khoan:      hdr.findIndex(h => /t[àa]i\s*kho[aả]n/i.test(h)),
-    tai_xe:         hdr.findIndex(h => /t[àa]i\s*x[eế]/i.test(h) || /t[àa]i\s*x[eê]/i.test(h)),
-    bien_so:        hdr.findIndex(h => /bi[eê]n/i.test(h)),
-    don_vi_kd:      hdr.findIndex(h => /[đd]v\s*k[đd]/i.test(h) || /[đd]v\s*kinh/i.test(h)),
-    chxd:           hdr.findIndex(h => /chxd/i.test(h) || /tr[aạ]m/i.test(h)),
-    mat_hang:       hdr.findIndex(h => /m[aặ]t\s*h[àa]ng/i.test(h)),
-    so_luong:       hdr.findIndex(h => /s[ốo]\s*l[uư][oơ]ng/i.test(h)),
-    tong_dt:        hdr.findIndex(h => /t[oổ]ng\s*dt/i.test(h) || /t[oổ]ng\s*doanh/i.test(h)),
-    tien_hang:      hdr.findIndex(h => /ti[eề]n\s*h[àa]ng/i.test(h)),
-    ky_hieu:        hdr.findIndex(h => /k[yý]\s*hi[eệ]u/i.test(h)),
-    so_hd:          hdr.findIndex(h => /s[ốo]\s*h[đd]/i.test(h)),
-    ngay_hd:        hdr.findIndex(h => /ng[àa]y\s*h[đd]/i.test(h)),
-    dvbh:           hdr.findIndex(h => /t[eê]n.*[đd]v.*b[aá]n/i.test(h) || /[đd]v.*b[aá]n/i.test(h)),
-    mst:            hdr.findIndex(h => /m[aã][\s]*s[ốo]/i.test(h) || /\bmst\b/i.test(h)),
-    khu_vuc:        hdr.findIndex(h => /khu\s*v[uư]c/i.test(h)),
-    trang_thai:     hdr.findIndex(h => /tr[aạ]ng\s*th[aá]i/i.test(h)),
+    ngay_gd:   hdr.findIndex(h => /ngày\s*g[dt]/i.test(h) || /ngày\s*giao/i.test(h) || /ngay\s*g/i.test(h)),
+    so_gd:     hdr.findIndex(h => /số\s*g[dt]/i.test(h) || /số\s*giao/i.test(h) || /so\s*g[dt]/i.test(h)),
+    tai_khoan: hdr.findIndex(h => /tài\s*khoản/i.test(h) || /tai\s*khoan/i.test(h)),
+    tai_xe:    hdr.findIndex(h => /tài\s*xế/i.test(h) || /tai\s*xe/i.test(h)),
+    // "Biển số" hoặc "Phương tiện" (tên cột khác nhau tùy xuất PVoil)
+    bien_so:   hdr.findIndex(h => /biển/i.test(h) || /phương\s*tiện/i.test(h)),
+    don_vi_kd: hdr.findIndex(h => /đv\s*k[đd]/i.test(h) || /đv\s*kinh/i.test(h) || /dv\s*k[đd]/i.test(h)),
+    chxd:      hdr.findIndex(h => /chxd/i.test(h) || /trạm/i.test(h) || /xuất\s*bán/i.test(h)),
+    mat_hang:  hdr.findIndex(h => /mặt\s*hàng/i.test(h)),
+    so_luong:  hdr.findIndex(h => /số\s*lượng/i.test(h)),
+    // Tổng DT / Tổng doanh / Tổng tiền VAT / Phải thu
+    tong_dt:   hdr.findIndex(h =>
+      /tổng\s*dt/i.test(h) || /tổng\s*doanh/i.test(h) ||
+      /phải\s*thu/i.test(h) || /tổng\s*tiền.*vat/i.test(h)
+    ),
+    tien_hang: hdr.findIndex(h =>
+      /tiền\s*hàng/i.test(h) || /doanh\s*thu.*hóa/i.test(h) || /doanh\s*thu.*hoa/i.test(h)
+    ),
+    ky_hieu:   hdr.findIndex(h => /ký\s*hiệu/i.test(h) || /ky\s*hieu/i.test(h)),
+    so_hd:     hdr.findIndex(h => /số\s*hđ/i.test(h) || /số\s*hd/i.test(h) || /so\s*h[đd]/i.test(h)),
+    ngay_hd:   hdr.findIndex(h => /ngày\s*hđ/i.test(h) || /ngày\s*hd/i.test(h) || /ngay\s*h[đd]/i.test(h)),
+    dvbh:      hdr.findIndex(h => /đv.*bán/i.test(h) || /dv.*ban/i.test(h) || /bán\s*hàng/i.test(h)),
+    mst:       hdr.findIndex(h => /mã\s*số/i.test(h) || /ma\s*so/i.test(h) || /\bmst\b/i.test(h)),
+    khu_vuc:   hdr.findIndex(h => /khu\s*v[uư]c/i.test(h)),
+    trang_thai:hdr.findIndex(h => /tr[aạ]ng\s*th[aá]i/i.test(h)),
   };
 
-  // Fallback: nếu không tìm đc tong_dt thì dùng cột có "tổng" cuối cùng
-  if (C.tong_dt < 0) C.tong_dt = hdr.reduce((acc, h, i) => /t[oổ]ng/i.test(h) ? i : acc, -1);
+  // Fallback tong_dt: cột "tổng" cuối cùng
+  if (C.tong_dt < 0)
+    C.tong_dt = hdr.reduce((acc, h, i) => /t[oổ]ng/i.test(h) ? i : acc, -1);
+  // Fallback tien_hang: dùng tong_dt nếu không có
+  if (C.tien_hang < 0) C.tien_hang = C.tong_dt;
+
+  const get = (r, idx) => (idx >= 0 && r[idx] != null) ? r[idx] : null;
+  const str = (r, idx) => { const v = get(r, idx); return v != null ? String(v).trim() : null; };
+  const num = (r, idx) => { const v = get(r, idx); return v != null ? Number(v) : null; };
 
   const result = [];
   for (let i = hi + 1; i < rows.length; i++) {
     const r = rows[i];
     if (!r) continue;
-    const bsRaw = r[C.bien_so] != null ? String(r[C.bien_so]).trim() : '';
-    if (!bsRaw) continue;
-    const kyHieu = r[C.ky_hieu] != null ? String(r[C.ky_hieu]).trim() : null;
-    const soHD   = r[C.so_hd]   != null ? String(r[C.so_hd]).trim()   : null;
-    if (!kyHieu && !soHD) continue;
+    const bsRaw = str(r, C.bien_so) || '';
+    // Biển số phải chứa ít nhất 1 chữ số (bỏ qua dòng tổng cộng, tiêu đề nhóm)
+    if (!bsRaw || !/\d/.test(bsRaw)) continue;
+
+    const kyHieu = str(r, C.ky_hieu);
+    const soHD   = str(r, C.so_hd);
+    // KHÔNG bắt buộc ky_hieu/so_hd — chúng có thể được lấy từ PDF
 
     result.push({
       bien_so:     normalizeBienSo(bsRaw),
       bien_so_raw: bsRaw,
-      ten_tai_xe:  r[C.tai_xe]   != null ? String(r[C.tai_xe]).trim()   : null,
-      ngay_gd:     excelDate(r[C.ngay_gd]),
-      so_gd:       r[C.so_gd]    != null ? String(r[C.so_gd]).trim()    : null,
-      tai_khoan:   r[C.tai_khoan]!= null ? String(r[C.tai_khoan]).trim(): null,
-      don_vi_kd:   r[C.don_vi_kd]!= null ? String(r[C.don_vi_kd]).trim(): null,
-      chxd:        r[C.chxd]     != null ? String(r[C.chxd]).trim()     : null,
-      mat_hang:    r[C.mat_hang] != null ? String(r[C.mat_hang]).trim() : null,
-      so_luong:    r[C.so_luong] != null ? Number(r[C.so_luong])        : null,
-      tien_hang:   r[C.tien_hang]!= null ? Number(r[C.tien_hang])       : null,
-      tong_dt:     r[C.tong_dt]  != null ? Number(r[C.tong_dt])         : null,
+      ten_tai_xe:  str(r, C.tai_xe),
+      ngay_gd:     excelDate(get(r, C.ngay_gd)),
+      so_gd:       str(r, C.so_gd),
+      tai_khoan:   str(r, C.tai_khoan),
+      don_vi_kd:   str(r, C.don_vi_kd),
+      chxd:        str(r, C.chxd),
+      mat_hang:    str(r, C.mat_hang),
+      so_luong:    num(r, C.so_luong),
+      tien_hang:   num(r, C.tien_hang),
+      tong_dt:     num(r, C.tong_dt),
       ky_hieu_hd:  kyHieu ? normKy(kyHieu) : null,
       so_hd:       soHD,
-      ngay_hd:     excelDate(r[C.ngay_hd]),
-      ten_dv_ban:  r[C.dvbh]     != null ? String(r[C.dvbh]).trim()     : null,
-      mst_dv_ban:  r[C.mst]      != null ? String(r[C.mst]).trim()      : null,
-      khu_vuc:     r[C.khu_vuc]  != null ? String(r[C.khu_vuc]).trim()  : null,
-      trang_thai:  r[C.trang_thai]!=null  ? String(r[C.trang_thai]).trim():null,
+      ngay_hd:     excelDate(get(r, C.ngay_hd)),
+      ten_dv_ban:  str(r, C.dvbh),
+      mst_dv_ban:  str(r, C.mst),
+      khu_vuc:     str(r, C.khu_vuc),
+      trang_thai:  str(r, C.trang_thai),
     });
   }
   return result;
@@ -629,11 +649,33 @@ export default function NhienLieuPage() {
       // 4. Archive → PDF stream
       if (refArchive.current?.files[0]) {
         const archFile = refArchive.current.files[0];
-        log(`📦 Tải archive (${(archFile.size/1024/1024).toFixed(1)} MB)...`);
-        const fd = new FormData();
-        fd.append('archive', new Blob([await archFile.arrayBuffer()]), archFile.name);
-        const res = await fetch('/api/nhien-lieu/unrar', { method:'POST', body:fd });
-        if (!res.ok) throw new Error('Lỗi API giải nén');
+        const sizeMB = (archFile.size / 1024 / 1024).toFixed(1);
+        log(`📦 File archive: ${sizeMB} MB`);
+
+        let res;
+        if (archFile.size > 3.5 * 1024 * 1024) {
+          // File lớn: upload thẳng lên Supabase Storage (bypass Vercel 4.5MB limit)
+          log('📤 File lớn, đang upload lên Supabase Storage...');
+          const { supabase } = await import('@/lib/supabase');
+          const ext = archFile.name.split('.').pop();
+          const storageKey = `archives/tmp_${thang}_${Date.now()}.${ext}`;
+          const { error: stErr } = await supabase.storage
+            .from('nhien-lieu')
+            .upload(storageKey, archFile, { upsert: true });
+          if (stErr) throw new Error('Lỗi upload Supabase Storage: ' + stErr.message);
+          log('✅ Upload xong, đang xử lý trên server...');
+          res = await fetch('/api/nhien-lieu/unrar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ storagePath: storageKey }),
+          });
+        } else {
+          // File nhỏ: gửi trực tiếp qua FormData
+          const fd = new FormData();
+          fd.append('archive', new Blob([await archFile.arrayBuffer()]), archFile.name);
+          res = await fetch('/api/nhien-lieu/unrar', { method: 'POST', body: fd });
+        }
+        if (!res.ok) throw new Error('Lỗi API giải nén: ' + (await res.text().catch(() => '')));
 
         const reader = res.body.getReader();
         const dec    = new TextDecoder();

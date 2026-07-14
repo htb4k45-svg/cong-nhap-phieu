@@ -1,17 +1,22 @@
 /**
  * POST /api/nhien-lieu/unrar
- * Nhận 1 file RAR/ZIP, giải nén đệ quy, trả về NDJSON:
- * { name, ky_hieu_hd, so_hd, dvbh, mst, pdfBase64 }
- * Gửi TẤT CẢ PDF - kể cả không parse được ky_hieu/so_hd
+ * Nhận:
+ *   - FormData { archive } : file nhỏ < 4MB
+ *   - JSON { storagePath } : file lớn đã upload lên Supabase Storage
+ * Trả về NDJSON: { name, ky_hieu_hd, so_hd, dvbh, mst, pdfBase64 }
+ * Gửi TẤT CẢ PDF kể cả không parse được
  */
 
-import { join }        from 'path';
-import { tmpdir }      from 'os';
-import { mkdirSync, writeFileSync, rmSync, readFileSync,
-         readdirSync, chmodSync }    from 'fs';
-import { execFile }    from 'child_process';
-import { promisify }   from 'util';
-import { randomUUID }  from 'crypto';
+export const maxDuration = 60; // Vercel: cho phép tối đa 60s
+export const dynamic    = 'force-dynamic';
+
+import { join }       from 'path';
+import { tmpdir }     from 'os';
+import { mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync } from 'fs';
+import { execFile }   from 'child_process';
+import { promisify }  from 'util';
+import { randomUUID } from 'crypto';
+import { createAdminClient } from '@/lib/supabase';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,7 +33,7 @@ try {
 // ── PDF text extraction ───────────────────────────────────────────────────────
 async function pdfToText(buf) {
   try {
-    const mod  = await import('pdf-parse/lib/pdf-parse.js');
+    const mod   = await import('pdf-parse/lib/pdf-parse.js');
     const parse = mod.default || mod;
     const data  = await parse(buf, { max: 3 });
     return data.text || '';
@@ -38,7 +43,6 @@ async function pdfToText(buf) {
 // ── Invoice text parser ───────────────────────────────────────────────────────
 function normalizeKyHieu(ky) {
   if (!ky) return null;
-  // Bỏ phần số đầu (mẫu số) VD: "1/K26TDY" → "K26TDY"
   return ky.replace(/^\d+[\/]?/, '').trim() || null;
 }
 
@@ -47,10 +51,8 @@ function parseInvoiceText(rawText) {
 
   // ── Ký hiệu ──
   let ky_hieu_hd = null;
-  // Mẫu 1: "Ký hiệu: K26TDY" hoặc "Ký hiệu hóa đơn: ..."
-  const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*(?:h[oó]a\s*đ[ơo]n\s*)?[:\-]?\s*([A-Z0-9\/]{3,20})/u);
+  const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*(?:h[oó]a\s*[đd][ơo]n\s*)?[:\-]?\s*([A-Z0-9\/]{3,20})/u);
   if (mKy) ky_hieu_hd = normalizeKyHieu(mKy[1].trim());
-  // Mẫu 2: pattern riêng "K2..." trước dãy số
   if (!ky_hieu_hd) {
     const mKy2 = t.match(/\b(K\d{2}[A-Z]{2,5})\b/);
     if (mKy2) ky_hieu_hd = mKy2[1];
@@ -58,25 +60,21 @@ function parseInvoiceText(rawText) {
 
   // ── Số HĐ ──
   let so_hd = null;
-  // Mẫu: số xuất hiện trước "Số:" (layout PVOIL: "75552 Số:")
   const mBefore = t.match(/(\d{3,})\s+S[ốo]\s*[:\-]/iu);
   if (mBefore) so_hd = mBefore[1];
   if (!so_hd) {
     const mAfter = t.match(/\bS[ốo]\s*[:\-]\s*(\d{4,12})/iu);
     if (mAfter) so_hd = mAfter[1];
   }
-  // Mẫu 3: "Số hóa đơn: ..."
   if (!so_hd) {
-    const mHD = t.match(/S[ốo]\s*h[oó]a\s*đ[ơo]n\s*[:\-]?\s*(\d{4,12})/iu);
+    const mHD = t.match(/S[ốo]\s*h[oó]a\s*[đd][ơo]n\s*[:\-]?\s*(\d{4,12})/iu);
     if (mHD) so_hd = mHD[1];
   }
 
   // ── Đơn vị bán hàng ──
   let dvbh = null;
   const mDVBH = t.match(/[Đđ][Ơơô]n\s+v[iị]\s+b[aá]n\s+h[aà]ng\s*[:\-]?\s*([^\n]{5,100})/iu);
-  if (mDVBH) {
-    dvbh = mDVBH[1].replace(/\s+M[ãa]\s*s[ốo].*$/i, '').trim();
-  }
+  if (mDVBH) dvbh = mDVBH[1].replace(/\s+M[ãa]\s*s[ốo].*$/i, '').trim();
 
   // ── Mã số thuế ──
   let mst = null;
@@ -125,25 +123,42 @@ export async function POST(req) {
     );
   }
 
+  // ── Đọc file archive (FormData hoặc Supabase Storage path) ────────────────
   let archiveBuf, archiveName;
+  let storageCleanup = null; // path để xóa sau khi xử lý xong
   try {
-    const fd   = await req.formData();
-    const file = fd.get('archive');
-    if (!file) throw new Error('Thiếu file archive');
-    archiveBuf  = Buffer.from(await file.arrayBuffer());
-    archiveName = file.name;
+    const ct = req.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      // File lớn: tải từ Supabase Storage
+      const { storagePath } = await req.json();
+      if (!storagePath) throw new Error('Thiếu storagePath');
+      const db = createAdminClient();
+      const { data: blob, error } = await db.storage.from('nhien-lieu').download(storagePath);
+      if (error) throw new Error('Lỗi tải Supabase Storage: ' + error.message);
+      archiveBuf    = Buffer.from(await blob.arrayBuffer());
+      archiveName   = storagePath.split('/').pop();
+      storageCleanup = storagePath;
+    } else {
+      // File nhỏ: FormData
+      const fd   = await req.formData();
+      const file = fd.get('archive');
+      if (!file) throw new Error('Thiếu file archive');
+      archiveBuf  = Buffer.from(await file.arrayBuffer());
+      archiveName = file.name;
+    }
   } catch (e) {
     return new Response(JSON.stringify({ error: e.message }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
-  // Dùng os.tmpdir() thay vì hardcode '/tmp' (Windows compatible)
   const tmpDir  = join(tmpdir(), 'unrar-' + randomUUID());
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (obj) => controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
+      const send = (obj) => {
+        try { controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n')); } catch (_) {}
+      };
       try {
         mkdirSync(tmpDir, { recursive: true });
         const ext         = '.' + archiveName.split('.').pop().toLowerCase();
@@ -153,6 +168,7 @@ export async function POST(req) {
         writeFileSync(archivePath, archiveBuf);
 
         // Giải nén archive gốc
+        send({ progress: 'Đang giải nén archive...' });
         await execFileAsync(path7za, ['x', '-y', archivePath, `-o${outDir}`], { timeout: 120_000 });
 
         // Giải nén đệ quy tất cả archive lồng nhau
@@ -172,22 +188,30 @@ export async function POST(req) {
         const pdfs = walkPdfs(outDir);
         send({ progress: `Tìm thấy ${pdfs.length} file PDF, đang đọc nội dung...` });
 
+        // Parse song song theo lô 8 để tăng tốc
+        const BATCH  = 8;
         let processed = 0;
         let parsed    = 0;
-        for (const { name, path } of pdfs) {
-          try {
-            const pdfBuf = readFileSync(path);
-            const text   = await pdfToText(pdfBuf);
-            const { ky_hieu_hd, so_hd, dvbh, mst } = parseInvoiceText(text);
+
+        for (let i = 0; i < pdfs.length; i += BATCH) {
+          const batch   = pdfs.slice(i, i + BATCH);
+          const results = await Promise.all(batch.map(async ({ name, path: p }) => {
+            try {
+              const pdfBuf = readFileSync(p);
+              const text   = await pdfToText(pdfBuf);
+              const info   = parseInvoiceText(text);
+              return { name, ...info, pdfBase64: pdfBuf.toString('base64') };
+            } catch (_) { return null; }
+          }));
+
+          for (const r of results) {
+            if (!r) continue;
             processed++;
-            if (ky_hieu_hd && so_hd) parsed++;
-            if (processed % 10 === 0) {
-              send({ progress: `Đã đọc ${processed}/${pdfs.length} PDF (nhận dạng được ${parsed})...` });
-            }
-            // Gửi TẤT CẢ PDF - kể cả không parse được ky_hieu/so_hd
-            // Client sẽ đối chiếu thủ công nếu cần
-            send({ name, ky_hieu_hd, so_hd, dvbh, mst, pdfBase64: pdfBuf.toString('base64') });
-          } catch (_) {}
+            if (r.ky_hieu_hd && r.so_hd) parsed++;
+            send(r); // gửi TẤT CẢ PDF
+          }
+
+          send({ progress: `Đã đọc ${Math.min(i + BATCH, pdfs.length)}/${pdfs.length} PDF...` });
         }
 
         send({ done: true, total: pdfs.length, parsed });
@@ -195,6 +219,13 @@ export async function POST(req) {
         send({ error: e.message });
       } finally {
         try { rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+        // Xóa file tạm trên Supabase Storage
+        if (storageCleanup) {
+          try {
+            const db = createAdminClient();
+            await db.storage.from('nhien-lieu').remove([storageCleanup]);
+          } catch (_) {}
+        }
         controller.close();
       }
     }

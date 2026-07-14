@@ -1,6 +1,0 @@
-flask
-pandas
-openpyxl
-xlrd
-rarfile
-gunicorn
