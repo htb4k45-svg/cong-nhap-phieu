@@ -601,7 +601,8 @@ export default function NhienLieuPage() {
     setLogs([]);
     const newPdfMap = {};
     try {
-      const XLSX = (await import('xlsx')).default;
+      const _xlsxMod = await import('xlsx');
+      const XLSX = _xlsxMod.default ?? _xlsxMod;
 
       // 1. PVoil Excel
       if (!refPvoil.current?.files[0]) throw new Error('Chưa chọn file Danh sách hóa đơn (PVoil) *');
