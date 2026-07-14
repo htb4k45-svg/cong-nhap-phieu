@@ -1,6 +1,12 @@
 'use client';
 import { useState, useRef, useEffect, useCallback, forwardRef } from 'react';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+
+// Client-side Supabase (chỉ dùng public key — không import @/lib/supabase để tránh bundle server code)
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

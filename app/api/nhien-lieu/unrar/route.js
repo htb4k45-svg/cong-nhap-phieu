@@ -13,10 +13,19 @@ import { mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync 
 import { execFile }   from 'child_process';
 import { promisify }  from 'util';
 import { randomUUID } from 'crypto';
-import { createAdminClient } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
 
-export const maxDuration = 60; // Vercel: cho phép tối đa 60s
+export const maxDuration = 60;
 export const dynamic    = 'force-dynamic';
+
+// Tạo admin client inline (tránh top-level import @/lib/supabase khi module có top-level await)
+function makeAdminClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.SUPABASE_SECRET_KEY,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -132,7 +141,7 @@ export async function POST(req) {
       // File lớn: tải từ Supabase Storage
       const { storagePath } = await req.json();
       if (!storagePath) throw new Error('Thiếu storagePath');
-      const db = createAdminClient();
+      const db = makeAdminClient();
       const { data: blob, error } = await db.storage.from('nhien-lieu').download(storagePath);
       if (error) throw new Error('Lỗi tải Supabase Storage: ' + error.message);
       archiveBuf    = Buffer.from(await blob.arrayBuffer());
@@ -222,7 +231,7 @@ export async function POST(req) {
         // Xóa file tạm trên Supabase Storage
         if (storageCleanup) {
           try {
-            const db = createAdminClient();
+            const db = makeAdminClient();
             await db.storage.from('nhien-lieu').remove([storageCleanup]);
           } catch (_) {}
         }
