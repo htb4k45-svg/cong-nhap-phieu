@@ -1,1554 +1,548 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
-import * as XLSX from 'xlsx';
-import { generateVehicleReport, generateFleetReport } from './reportGen';
+import { useState, useRef, useEffect, useCallback, forwardRef } from 'react';
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-function normPlate(raw) {
-  if (!raw) return null;
-  const c = String(raw).trim().replace(/[-. ]/g, '');
-  if (c.length === 8) return `${c.slice(0,3)}-${c.slice(3,6)}.${c.slice(6,8)}`;
-  return String(raw).trim();
-}
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function fmtNum(n, dec = 0) {
-  if (n == null || isNaN(n)) return '—';
-  return Number(n).toLocaleString('vi-VN', { maximumFractionDigits: dec, minimumFractionDigits: dec });
-}
+const normSo  = s => { if (!s) return ''; const n = parseInt(String(s), 10); return isNaN(n) ? String(s) : String(n); };
+const normKy  = ky => ky ? ky.replace(/^\d+[\/]?/, '').trim().toUpperCase() : '';
+const fmtNum  = n  => n != null ? Number(n).toLocaleString('vi-VN') : '';
+const fmtDate = d  => { if (!d) return ''; try { return new Date(d).toLocaleDateString('vi-VN'); } catch { return String(d); } };
 
-function fmtDate(v) {
-  if (!v) return '—';
-  const d = v instanceof Date ? v : new Date(v);
-  if (isNaN(d)) return String(v);
-  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
-}
-
-function fmtDateTime(v) {
-  if (!v) return '—';
-  const d = v instanceof Date ? v : new Date(v);
-  if (isNaN(d)) return String(v);
-  return `${fmtDate(d)} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}
-
-function excelDateToJS(val) {
-  if (!val) return null;
-  if (val instanceof Date) return val;
-  if (typeof val === 'number') {
-    // Excel serial date
-    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
-    return d;
+function excelDate(v) {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (typeof v === 'number') {
+    const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+    return d.toISOString().slice(0, 10);
   }
-  const d = new Date(val);
-  return isNaN(d) ? null : d;
-}
-
-function thisMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-}
-
-// ── PVOIL Excel parser ────────────────────────────────────────────────────────
-// Cấu trúc: header row 6 (0-indexed), sub-header row 7, data từ row 8
-// Columns: [0]STT [1]Ngày GD [2]Số GD [3]Tài khoản [4]Tên tài xế [5]Biển KS
-//          [6]ĐV KD [7]CHXD [8]ĐV [9]Mặt hàng [10]Số lượng
-//          [11]Giá CK → [12]Tiền hàng [13]Thuế [14]Tổng DT (chua CK)
-//          [15]Giá có CK → [16]Tiền hàng [17]Thuế [18]Tổng DT (co CK)
-//          [19]Tên gọi tắt [20]Mẫu HĐ [21]Ký hiệu HĐ [22]Số HĐ [23]Ngày HĐ
-//          [24]Tên ĐV bán [25]MST [26]Khu vực [27]Trạng thái
-function parsePVOIL(workbook) {
-  const ws = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
-
-  // Tìm dòng header (có 'STT')
-  let hRow = -1;
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i].some(c => String(c || '').toUpperCase().trim() === 'STT')) { hRow = i; break; }
+  const s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const parts = s.split(/[\/\-\.]/);
+  if (parts.length === 3) {
+    const [a, b, c] = parts;
+    if (a.length === 4) return `${a}-${b.padStart(2,'0')}-${c.padStart(2,'0')}`;
+    return `${c}-${b.padStart(2,'0')}-${a.padStart(2,'0')}`;
   }
-  if (hRow === -1) throw new Error('Không tìm thấy dòng header (STT)');
-
-  const dataStart = hRow + 2; // bỏ qua sub-header row
-  const records = [];
-
-  for (let i = dataStart; i < rows.length; i++) {
-    const row = rows[i];
-    const stt = row[0];
-    if (stt == null || String(stt).trim() === '') continue;
-    if (isNaN(Number(stt))) continue; // dòng tổng cộng v.v.
-
-    const rawPlate = row[5];
-    const bien_so_raw = rawPlate ? String(rawPlate).trim() : null;
-    const bien_so = normPlate(bien_so_raw);
-
-    const ngayRaw = excelDateToJS(row[1]);
-    const ngayHDRaw = excelDateToJS(row[23]);
-
-    records.push({
-      bien_so,
-      bien_so_raw,
-      ngay_gd:          ngayRaw ? ngayRaw.toISOString() : null,
-      so_gd:            row[2] != null ? String(row[2]) : null,
-      tai_khoan:        row[3] != null ? String(row[3]) : null,
-      ten_tai_xe:       row[4] != null ? String(row[4]).trim() : null,
-      don_vi_kd:        row[6] != null ? String(row[6]).trim() : null,
-      chxd:             row[7] != null ? String(row[7]).trim() : null,
-      don_vi:           row[8] != null ? String(row[8]).trim() : null,
-      mat_hang:         row[9] != null ? String(row[9]).trim() : null,
-      so_luong_lit:     Number(row[10]) || 0,
-      gia_chua_ck:      Number(row[11]) || null,
-      tien_hang_chua_ck: Number(row[12]) || null,
-      thue_gtgt_chua_ck: Number(row[13]) || null,
-      tong_dt_chua_ck:  Number(row[14]) || null,
-      gia_co_ck:        Number(row[15]) || null,
-      tien_hang_co_ck:  Number(row[16]) || null,
-      thue_gtgt_co_ck:  Number(row[17]) || null,
-      tong_dt_co_ck:    Number(row[18]) || null,
-      ten_goi_tat:      row[19] != null ? String(row[19]).trim() : null,
-      mau_so_hd:        row[20] != null ? String(row[20]).trim() : null,
-      ky_hieu_hd:       row[21] != null ? String(row[21]).trim() : null,
-      so_hd:            row[22] != null ? String(row[22]) : null,
-      ngay_hd:          ngayHDRaw ? ngayHDRaw.toISOString().split('T')[0] : null,
-      ten_dv_ban:       row[24] != null ? String(row[24]).trim() : null,
-      mst_dv_ban:       row[25] != null ? String(row[25]).trim() : null,
-      khu_vuc:          row[26] != null ? String(row[26]).trim() : null,
-      trang_thai:       row[27] != null ? String(row[27]).trim() : null,
-    });
-  }
-  return records;
+  return null;
 }
 
-// ── Km định mức parser ────────────────────────────────────────────────────────
-// Columns: [0]Biển số [1]Tài xế [2]Tải trọng [3]Km đầu [4]Km cuối
-//          [5]ĐM khoán [6]Tồn đầu kỳ [7]Tồn cuối kỳ
-function parseKmDinhMuc(workbook) {
-  const ws = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
-
-  let hRow = -1;
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i].some(c => String(c || '').toUpperCase().includes('BIỂN SỐ')
-                       || String(c || '').toUpperCase().includes('BIEN SO'))) {
-      hRow = i; break;
+function normalizeBienSo(raw) {
+  if (!raw) return raw;
+  const s = String(raw).trim().toUpperCase();
+  if (!/[-.]/.test(s) && /^[0-9]{2}[A-Z]{1,2}\d+$/.test(s)) {
+    const m = s.match(/^(\d{2}[A-Z]{1,2})(\d+)$/);
+    if (m) {
+      const nums = m[2];
+      if (nums.length === 5) return `${m[1]}-${nums.slice(0,2)}.${nums.slice(2)}`;
+      if (nums.length === 6) return `${m[1]}-${nums.slice(0,3)}.${nums.slice(3)}`;
+      return `${m[1]}-${nums}`;
     }
   }
-  if (hRow === -1) throw new Error('Không tìm thấy dòng header (Biển số)');
-
-  const records = [];
-  for (let i = hRow + 1; i < rows.length; i++) {
-    const row = rows[i];
-    const rawPlate = row[0];
-    if (!rawPlate || String(rawPlate).trim() === '') continue;
-    const bsStr = String(rawPlate).trim();
-    // Bỏ qua dòng ghi chú
-    if (bsStr.startsWith('Lưu') || bsStr.length < 4) continue;
-
-    records.push({
-      bien_so:          normPlate(bsStr),
-      tai_trong:        row[2] != null ? String(row[2]).trim() : null,
-      km_dau:           row[3] != null ? parseInt(row[3]) || null : null,
-      km_cuoi:          row[4] != null ? parseInt(row[4]) || null : null,
-      dinh_muc_l_100km: row[5] != null ? parseFloat(row[5]) || null : null,
-      ton_dau_lit:      row[6] != null ? parseFloat(row[6]) || null : null,
-      ton_cuoi_lit:     row[7] != null ? parseFloat(row[7]) || null : null,
-    });
-  }
-  return records;
+  return s;
 }
 
-// ── UI Style helpers ──────────────────────────────────────────────────────────
-const card = { background: 'white', borderRadius: 10, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,.08)', marginBottom: 16 };
-const btn = (color = '#2563eb') => ({
-  padding: '8px 18px', background: color, color: 'white', border: 'none',
-  borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600,
-});
-const input = {
-  border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 10px', fontSize: 13,
-};
+// ─── Excel parsers ────────────────────────────────────────────────────────────
 
-// ════════════════════════════════════════════════════════════════════════════
-export default function NhienLieuPage() {
-  const [tab, setTab] = useState('bao-cao');
-  const [pdfMap, setPdfMap] = useState({});  // ky_hieu_hd|so_hd → { url, name }
-  const [cpMap,  setCpMap]  = useState({});  // normPlate → { cp_nb_caudong, ... }
+function sheetToRows(sheet, XLSX) {
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+}
 
+function findHeader(rows, minCols = 4) {
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const r = rows[i];
+    if (r && r.filter(c => c != null && String(c).trim() !== '').length >= minCols) return i;
+  }
+  return 0;
+}
+
+function parsePvoilExcel(wb, XLSX) {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = sheetToRows(ws, XLSX);
+  const hi = findHeader(rows);
+  const hdr = (rows[hi] || []).map(c => c == null ? '' : String(c));
+
+  const C = {
+    ngay_gd:        hdr.findIndex(h => /ng[aà]y\s*g[dt]/i.test(h)),
+    so_gd:          hdr.findIndex(h => /s[ốo]\s*g[dt]/i.test(h)),
+    tai_khoan:      hdr.findIndex(h => /t[àa]i\s*kho[aả]n/i.test(h)),
+    tai_xe:         hdr.findIndex(h => /t[àa]i\s*x[eế]/i.test(h) || /t[àa]i\s*x[eê]/i.test(h)),
+    bien_so:        hdr.findIndex(h => /bi[eê]n/i.test(h)),
+    don_vi_kd:      hdr.findIndex(h => /[đd]v\s*k[đd]/i.test(h) || /[đd]v\s*kinh/i.test(h)),
+    chxd:           hdr.findIndex(h => /chxd/i.test(h) || /tr[aạ]m/i.test(h)),
+    mat_hang:       hdr.findIndex(h => /m[aặ]t\s*h[àa]ng/i.test(h)),
+    so_luong:       hdr.findIndex(h => /s[ốo]\s*l[uư][oơ]ng/i.test(h)),
+    tong_dt:        hdr.findIndex(h => /t[oổ]ng\s*dt/i.test(h) || /t[oổ]ng\s*doanh/i.test(h)),
+    tien_hang:      hdr.findIndex(h => /ti[eề]n\s*h[àa]ng/i.test(h)),
+    ky_hieu:        hdr.findIndex(h => /k[yý]\s*hi[eệ]u/i.test(h)),
+    so_hd:          hdr.findIndex(h => /s[ốo]\s*h[đd]/i.test(h)),
+    ngay_hd:        hdr.findIndex(h => /ng[àa]y\s*h[đd]/i.test(h)),
+    dvbh:           hdr.findIndex(h => /t[eê]n.*[đd]v.*b[aá]n/i.test(h) || /[đd]v.*b[aá]n/i.test(h)),
+    mst:            hdr.findIndex(h => /m[aã][\s]*s[ốo]/i.test(h) || /\bmst\b/i.test(h)),
+    khu_vuc:        hdr.findIndex(h => /khu\s*v[uư]c/i.test(h)),
+    trang_thai:     hdr.findIndex(h => /tr[aạ]ng\s*th[aá]i/i.test(h)),
+  };
+
+  // Fallback: nếu không tìm đc tong_dt thì dùng cột có "tổng" cuối cùng
+  if (C.tong_dt < 0) C.tong_dt = hdr.reduce((acc, h, i) => /t[oổ]ng/i.test(h) ? i : acc, -1);
+
+  const result = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const bsRaw = r[C.bien_so] != null ? String(r[C.bien_so]).trim() : '';
+    if (!bsRaw) continue;
+    const kyHieu = r[C.ky_hieu] != null ? String(r[C.ky_hieu]).trim() : null;
+    const soHD   = r[C.so_hd]   != null ? String(r[C.so_hd]).trim()   : null;
+    if (!kyHieu && !soHD) continue;
+
+    result.push({
+      bien_so:     normalizeBienSo(bsRaw),
+      bien_so_raw: bsRaw,
+      ten_tai_xe:  r[C.tai_xe]   != null ? String(r[C.tai_xe]).trim()   : null,
+      ngay_gd:     excelDate(r[C.ngay_gd]),
+      so_gd:       r[C.so_gd]    != null ? String(r[C.so_gd]).trim()    : null,
+      tai_khoan:   r[C.tai_khoan]!= null ? String(r[C.tai_khoan]).trim(): null,
+      don_vi_kd:   r[C.don_vi_kd]!= null ? String(r[C.don_vi_kd]).trim(): null,
+      chxd:        r[C.chxd]     != null ? String(r[C.chxd]).trim()     : null,
+      mat_hang:    r[C.mat_hang] != null ? String(r[C.mat_hang]).trim() : null,
+      so_luong:    r[C.so_luong] != null ? Number(r[C.so_luong])        : null,
+      tien_hang:   r[C.tien_hang]!= null ? Number(r[C.tien_hang])       : null,
+      tong_dt:     r[C.tong_dt]  != null ? Number(r[C.tong_dt])         : null,
+      ky_hieu_hd:  kyHieu ? normKy(kyHieu) : null,
+      so_hd:       soHD,
+      ngay_hd:     excelDate(r[C.ngay_hd]),
+      ten_dv_ban:  r[C.dvbh]     != null ? String(r[C.dvbh]).trim()     : null,
+      mst_dv_ban:  r[C.mst]      != null ? String(r[C.mst]).trim()      : null,
+      khu_vuc:     r[C.khu_vuc]  != null ? String(r[C.khu_vuc]).trim()  : null,
+      trang_thai:  r[C.trang_thai]!=null  ? String(r[C.trang_thai]).trim():null,
+    });
+  }
+  return result;
+}
+
+function parseDinhMucExcel(wb, XLSX) {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = sheetToRows(ws, XLSX);
+  const hi = findHeader(rows, 2);
+  const hdr = (rows[hi] || []).map(c => c == null ? '' : String(c));
+
+  const C = {
+    bien_so:     hdr.findIndex(h => /bi[eê]n/i.test(h)),
+    tai_trong:   hdr.findIndex(h => /t[aả]i\s*tr[oọ]ng/i.test(h)),
+    km_dau:      hdr.findIndex(h => /km.*[đd][aầ]u/i.test(h) || /[đd][aầ]u.*km/i.test(h)),
+    km_cuoi:     hdr.findIndex(h => /km.*cu[oố]i/i.test(h) || /cu[oố]i.*km/i.test(h)),
+    dinh_muc:    hdr.findIndex(h => /[đd][iị]nh.*m[uứ]c/i.test(h) || /m[uứ]c.*l[ítí]/i.test(h) || /l[ítí].*100/i.test(h)),
+    ton_dau:     hdr.findIndex(h => /t[oồ]n.*[đd][aầ]u/i.test(h)),
+    ton_cuoi:    hdr.findIndex(h => /t[oồ]n.*cu[oố]i/i.test(h)),
+  };
+
+  const result = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const bsRaw = r[C.bien_so] != null ? String(r[C.bien_so]).trim() : '';
+    if (!bsRaw || !/\d/.test(bsRaw)) continue;
+    result.push({
+      bien_so:          normalizeBienSo(bsRaw),
+      tai_trong:        r[C.tai_trong] != null ? String(r[C.tai_trong]).trim() : null,
+      km_dau:           r[C.km_dau]    != null ? Number(r[C.km_dau])           : null,
+      km_cuoi:          r[C.km_cuoi]   != null ? Number(r[C.km_cuoi])          : null,
+      dinh_muc_l_100km: r[C.dinh_muc]  != null ? Number(r[C.dinh_muc])         : null,
+      ton_dau_lit:      r[C.ton_dau]   != null ? Number(r[C.ton_dau])          : null,
+      ton_cuoi_lit:     r[C.ton_cuoi]  != null ? Number(r[C.ton_cuoi])         : null,
+    });
+  }
+  return result;
+}
+
+function parseChiPhiExcel(wb, XLSX) {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = sheetToRows(ws, XLSX);
+  const hi = findHeader(rows, 2);
+  const hdr = (rows[hi] || []).map(c => c == null ? '' : String(c));
+
+  const C = {
+    bien_so: hdr.findIndex(h => /bi[eê]n/i.test(h)),
+    loai_cp: hdr.findIndex(h => /lo[aạ]i/i.test(h) || /chi\s*ph[iíì]/i.test(h) || /n[oộ]i\s*dung/i.test(h)),
+    so_tien: hdr.findIndex(h => /s[ốo]\s*ti[eề]n/i.test(h) || /gi[aá]\s*tr[iị]/i.test(h) || /ti[eề]n/i.test(h)),
+    ghi_chu: hdr.findIndex(h => /ghi\s*ch[uú]/i.test(h)),
+  };
+
+  const result = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const st = r[C.so_tien];
+    if (st == null || st === '') continue;
+    const bsRaw = r[C.bien_so] != null ? String(r[C.bien_so]).trim() : '';
+    result.push({
+      bien_so: bsRaw ? normalizeBienSo(bsRaw) : null,
+      loai_cp: r[C.loai_cp] != null ? String(r[C.loai_cp]).trim() : null,
+      so_tien: Number(st),
+      ghi_chu: r[C.ghi_chu] != null ? String(r[C.ghi_chu]).trim() : null,
+    });
+  }
+  return result;
+}
+
+// ─── Shared styles ────────────────────────────────────────────────────────────
+const tdS = { padding: '6px 10px', borderBottom: '1px solid #f0f0f0', whiteSpace: 'nowrap' };
+const thS = { padding: '8px 10px', textAlign: 'left', fontWeight: 500, borderBottom: '1px solid #e5e7eb', whiteSpace: 'nowrap' };
+
+function openPdf(base64) {
+  const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+  const url   = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// ─── FileInput ────────────────────────────────────────────────────────────────
+const FileInput = forwardRef(function FileInput({ label, accept, hint, required }, ref) {
+  const [name, setName] = useState(null);
   return (
-    <div style={{ minHeight: '100vh', background: '#f8fafc', padding: '24px 16px' }}>
-      <div style={{ maxWidth: 1300, margin: '0 auto' }}>
-        <div style={{ marginBottom: 20 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1e293b', margin: 0 }}>⛽ Quản lý nhiên liệu</h1>
-          <p style={{ fontSize: 13, color: '#64748b', margin: '4px 0 0' }}>
-            Import PVOIL & định mức km, báo cáo tiêu thụ và cảnh báo vượt định mức
-          </p>
-        </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <label style={{ fontSize: 14, fontWeight: 500 }}>
+        {label}{required && <span style={{ color: '#ef4444' }}> *</span>}
+      </label>
+      <input type="file" accept={accept} ref={ref}
+        onChange={e => setName(e.target.files[0]?.name || null)}
+        style={{ border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 10px', fontSize: 13 }}
+      />
+      <span style={{ fontSize: 12, color: name ? '#16a34a' : '#9ca3af' }}>
+        {name ? `✓ ${name}` : hint}
+      </span>
+    </div>
+  );
+});
 
-        {/* Tabs */}
-        <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '2px solid #e2e8f0' }}>
-          {[
-            { id: 'bao-cao',      label: '📊 Báo cáo tháng' },
-            { id: 'import-pvoil', label: '📥 Import PVOIL' },
-            { id: 'import-km',    label: '🛣 Import Km định mức' },
-            { id: 'hoa-don-pdf',  label: '📄 Hóa đơn PDF' },
-            { id: 'chi-phi',      label: '💰 Chi phí phát sinh' },
-          ].map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              style={{
-                padding: '8px 18px', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
-                borderBottom: tab === t.id ? '2px solid #2563eb' : '2px solid transparent',
-                color: tab === t.id ? '#2563eb' : '#64748b',
-                background: 'transparent', marginBottom: -2,
-              }}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Dùng CSS hide/show để giữ state khi đổi tab */}
-        <div style={{ display: tab === 'bao-cao'      ? 'block' : 'none' }}><TabBaoCao pdfMap={pdfMap} setPdfMap={setPdfMap} cpMap={cpMap} /></div>
-        <div style={{ display: tab === 'import-pvoil' ? 'block' : 'none' }}><TabImportPVOIL /></div>
-        <div style={{ display: tab === 'import-km'    ? 'block' : 'none' }}><TabImportKm /></div>
-        <div style={{ display: tab === 'hoa-don-pdf'  ? 'block' : 'none' }}><TabHoaDonPDF pdfMap={pdfMap} setPdfMap={setPdfMap} /></div>
-        <div style={{ display: tab === 'chi-phi'      ? 'block' : 'none' }}><TabChiPhi cpMap={cpMap} setCpMap={setCpMap} /></div>
-      </div>
+// ─── StatCard ─────────────────────────────────────────────────────────────────
+function StatCard({ label, value, color }) {
+  return (
+    <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 18px' }}>
+      <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 600, color: color ?? '#111' }}>{value}</div>
     </div>
   );
 }
 
-// ── Xuất CSV helper ──────────────────────────────────────────────────────────
-function toCSV(rows2d, filename) {
-  const csv = rows2d.map(r => r.map(c => `"${String(c ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
-}
+// ─── DanhSachTab ─────────────────────────────────────────────────────────────
+function DanhSachTab({ invoices, pdfMap }) {
+  const [filterXe, setFilterXe] = useState('');
+  const byXe = invoices.reduce((acc, inv) => {
+    const bs = inv.bien_so || '(không rõ)';
+    if (!acc[bs]) acc[bs] = [];
+    acc[bs].push(inv);
+    return acc;
+  }, {});
+  const xeList = Object.keys(byXe).sort();
+  const filtered = filterXe ? xeList.filter(x => x.includes(filterXe.toUpperCase())) : xeList;
 
-const DETAIL_HEADERS = [
-  ['Biển số',               false],
-  ['Ngày giao dịch',        false],
-  ['Tên tài xế',            false],
-  ['Đơn vị kinh doanh',     false],
-  ['Mặt hàng',              false],
-  ['Đơn vị',                false],
-  ['Số lít thực tế',        true],
-  ['Đơn giá chưa CK',       true],
-  ['Thành tiền chưa CK',    true],
-  ['Đơn giá có CK',         true],
-  ['Thành tiền có CK',      true],
-  ['Ký hiệu HĐ',            false],
-  ['Số hóa đơn',            false],
-  ['Ngày hóa đơn',          false],
-  ['Tên đơn vị bán',        false],
-  ['Mã số thuế ĐV bán',     false],
-];
-
-function detailRow(d, bien_so) {
-  return [
-    bien_so || d.bien_so || '',
-    fmtDateTime(d.ngay_gd), d.ten_tai_xe || '', d.don_vi_kd || '',
-    d.mat_hang || '', d.don_vi || '',
-    d.so_luong_lit ?? '',
-    d.gia_chua_ck ?? '', d.tien_hang_chua_ck ?? '',
-    d.gia_co_ck ?? '', d.tien_hang_co_ck ?? '',
-    d.ky_hieu_hd || '', d.so_hd || '', fmtDate(d.ngay_hd),
-    d.ten_dv_ban || '', d.mst_dv_ban || '',
-  ];
-}
-
-// ══════════════════════════════════════════════════════════
-// Tab 1: BÁO CÁO
-// ══════════════════════════════════════════════════════════
-function TabBaoCao({ pdfMap = {}, setPdfMap, cpMap = {} }) {
-  const [thang, setThang]       = useState(thisMonth());
-  const [data, setData]         = useState(null);
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState(null);
-  const [expanded, setExpanded] = useState(null);
-  const [cache, setCache]       = useState({});
-  const [checked, setChecked]   = useState(new Set());
-  const [exporting, setExporting] = useState(false);
-  const [zipStatus, setZipStatus] = useState(''); // '' | 'loading' | 'done'
-
-  // Upload ZIP hóa đơn PDF trực tiếp từ tab Báo cáo
-  const handleZip = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!window.JSZip) { alert('Thư viện chưa sẵn sàng, thử lại sau vài giây'); return; }
-    setZipStatus('loading');
-    try {
-      const zip = await window.JSZip.loadAsync(await file.arrayBuffer());
-      const pdfFiles = [];
-      const scan = async (z) => {
-        const subs = [];
-        z.forEach((path, entry) => {
-          if (entry.dir) return;
-          const name = path.split('/').pop();
-          const lower = name.toLowerCase();
-          if (lower.endsWith('.pdf')) pdfFiles.push({ name, entry });
-          else if (lower.endsWith('.zip')) subs.push(entry);
-        });
-        for (const s of subs) await scan(await window.JSZip.loadAsync(await s.async('arraybuffer')));
-      };
-      await scan(zip);
-      console.log('[ZIP BaoCao] Tổng PDF tìm thấy:', pdfFiles.length);
-
-      const newMap = {};
-      for (const { name, entry } of pdfFiles) {
-        try {
-          const buf = await entry.async('arraybuffer');
-          const { ky_hieu_hd, so_hd } = parseInvoiceText(await pdfToText(buf));
-          if (!ky_hieu_hd || !so_hd) { console.warn('[ZIP BaoCao] Không đọc được HĐ:', name); continue; }
-          const key = ky_hieu_hd + '|' + normSoHD(so_hd);
-          console.log('[ZIP BaoCao]', name, '→', key);
-          newMap[key] = { url: URL.createObjectURL(new Blob([buf], { type:'application/pdf' })), name, ky_hieu_hd, so_hd };
-        } catch (err) { console.warn('[ZIP BaoCao] Skip:', name, err.message); }
-      }
-      setPdfMap(newMap);
-      setZipStatus('done:' + Object.keys(newMap).length + '/' + pdfFiles.length);
-    } catch (err) {
-      setZipStatus('');
-      alert('Lỗi xử lý ZIP: ' + err.message);
-    }
-    e.target.value = '';
-  };
-
-  const load = useCallback(async () => {
-    setLoading(true); setError(null); setExpanded(null); setCache({}); setChecked(new Set());
-    try {
-      const res  = await fetch(`/api/nhien-lieu/bao-cao?thang=${thang}`);
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setData(json);
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
-  }, [thang]);
-
-  useEffect(() => { load(); }, [load]);
-
-  // Mở/đóng chi tiết inline cho 1 xe
-  const toggleExpand = async (bien_so) => {
-    if (expanded === bien_so) { setExpanded(null); return; }
-    setExpanded(bien_so);
-    if (cache[bien_so]) return; // đã cache
-    setCache(c => ({ ...c, [bien_so]: { rows: null, loading: true } }));
-    try {
-      const res  = await fetch(`/api/nhien-lieu/bao-cao?thang=${thang}&bien_so=${encodeURIComponent(bien_so)}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setCache(c => ({ ...c, [bien_so]: { rows: json.detail || [], loading: false } }));
-    } catch (err) {
-      console.error('[toggleExpand]', bien_so, err);
-      setCache(c => ({ ...c, [bien_so]: { rows: [], loading: false, error: err.message } }));
-    }
-  };
-
-  // Checkbox toggle
-  const toggleCheck = (e, bien_so) => {
-    e.stopPropagation();
-    setChecked(prev => {
-      const next = new Set(prev);
-      next.has(bien_so) ? next.delete(bien_so) : next.add(bien_so);
-      return next;
-    });
-  };
-
-  const toggleAll = (e) => {
-    if (!data?.rows) return;
-    if (checked.size === data.rows.length) setChecked(new Set());
-    else setChecked(new Set(data.rows.map(r => r.bien_so)));
-  };
-
-  // Xuất CSV tổng hợp (các xe đã check, hoặc tất cả)
-  const exportSummary = (subset) => {
-    const rows = subset ? data.rows.filter(r => checked.has(r.bien_so)) : data.rows;
-    if (!rows?.length) return;
-    const headers = ['Biển số','Tải trọng','ĐM (l/100km)','Km đầu','Km cuối','Km thực','Tồn đầu (l)','Lít đổ','Tồn cuối (l)','Lít tiêu thụ','ĐM tổng lít','TH thực (l/100km)','Chênh lệch','Tiền hàng','Tổng DT','Trạng thái'];
-    const data2d = rows.map(r => [
-      r.bien_so, r.tai_trong, r.dinh_muc ?? '', r.km_dau ?? '', r.km_cuoi ?? '', r.km_thuc,
-      r.ton_dau, r.lit_do, r.ton_cuoi, r.lit_tieu_thu, r.dm_tong_lit ?? '',
-      r.tieu_hao_thuc ?? '', r.chenh_lech ?? '', r.tien_hang, r.tong_dt,
-      r.vuot_dm ? 'VƯỢT ĐM' : '',
-    ]);
-    toCSV([headers, ...data2d], `tong-hop-nhien-lieu_${thang}.csv`);
-  };
-
-  // Xuất CSV chi tiết giao dịch cho các xe đã check
-  const exportCheckedDetail = async () => {
-    if (!checked.size) return;
-    setExporting(true);
-    const plates = [...checked];
-    // Fetch detail cho xe chưa có trong cache
-    const toFetch = plates.filter(bs => !cache[bs]);
-    await Promise.all(toFetch.map(async bs => {
-      const res  = await fetch(`/api/nhien-lieu/bao-cao?thang=${thang}&bien_so=${encodeURIComponent(bs)}`);
-      const json = await res.json();
-      setCache(c => ({ ...c, [bs]: { rows: json.detail || [], loading: false } }));
-      return { bs, rows: json.detail || [] };
-    }));
-    // Lấy từ cache (sau khi fetch xong)
-    const allRows = [];
-    for (const bs of plates) {
-      const rows = cache[bs]?.rows || [];
-      for (const d of rows) allRows.push(detailRow(d, bs));
-    }
-    toCSV([DETAIL_HEADERS.map(([h]) => h), ...allRows], `chi-tiet-nhien-lieu_${thang}.csv`);
-    setExporting(false);
-  };
-
-  const nChecked = checked.size;
-  const allChecked = data?.rows?.length > 0 && checked.size === data.rows.length;
+  if (!invoices.length) return <p style={{ color: '#9ca3af', marginTop: 40, textAlign: 'center' }}>Chưa có dữ liệu. Upload file ở tab đầu tiên.</p>;
 
   return (
     <div>
-      {/* Bộ lọc */}
-      <div style={{ ...card, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <div>
-          <label style={{ fontSize: 12, color: '#64748b', display: 'block', marginBottom: 4 }}>Tháng</label>
-          <input type="month" value={thang} onChange={e => setThang(e.target.value)} style={input} />
-        </div>
-        <button onClick={load} style={btn()}>Tải báo cáo</button>
-        {/* ZIP upload HĐ PDF — dùng ngay trong tab Báo cáo */}
-        <label style={{ ...btn(zipStatus.startsWith('done') ? '#16a34a' : '#0891b2'), display:'inline-block', cursor:'pointer', whiteSpace:'nowrap' }}>
-          {zipStatus === 'loading'
-            ? '⏳ Đang xử lý...'
-            : zipStatus.startsWith('done')
-              ? `✅ ${zipStatus.split(':')[1]} PDF • Đổi ZIP`
-              : '📦 Upload ZIP hóa đơn PDF'}
-          <input type="file" accept=".zip" onChange={handleZip}
-            disabled={zipStatus === 'loading'} style={{ display:'none' }} />
-        </label>
-        <button onClick={() => exportSummary(false)} disabled={!data?.rows?.length}
-          style={{ ...btn('#475569'), opacity: data?.rows?.length ? 1 : 0.4 }}>
-          ⬇ Xuất tổng hợp (tất cả)
-        </button>
-        <button onClick={() => data?.rows?.length && generateFleetReport(data.rows, thang, cpMap)}
-          disabled={!data?.rows?.length}
-          style={{ ...btn('#0891b2'), opacity: data?.rows?.length ? 1 : 0.4 }}>
-          🚛 BC Đoàn Xe (.xlsx)
-        </button>
-        {nChecked > 0 && (
-          <>
-            <button onClick={() => exportSummary(true)}
-              style={btn('#7c3aed')}>
-              ⬇ Tổng hợp ({nChecked} xe)
-            </button>
-            <button onClick={exportCheckedDetail} disabled={exporting}
-              style={{ ...btn('#059669'), opacity: exporting ? 0.6 : 1 }}>
-              {exporting ? 'Đang xuất...' : `⬇ Chi tiết GD (${nChecked} xe)`}
-            </button>
-            <button onClick={() => setChecked(new Set())}
-              style={{ ...btn('#94a3b8') }}>
-              Bỏ chọn
-            </button>
-          </>
-        )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <input placeholder="Lọc biển số..." value={filterXe} onChange={e => setFilterXe(e.target.value)}
+          style={{ border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 10px', fontSize: 13, width: 180 }} />
+        <span style={{ fontSize: 13, color: '#6b7280' }}>{xeList.length} xe · {invoices.length} hóa đơn</span>
       </div>
-
-      {loading && <div style={{ textAlign: 'center', padding: 40, color: '#64748b' }}>Đang tải...</div>}
-      {error   && <div style={{ padding: 16, color: '#dc2626', background: '#fef2f2', borderRadius: 8, marginBottom: 12 }}>Lỗi: {error}</div>}
-
-      {data && !loading && (
-        <>
-          {/* Summary cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
-            {[
-              { label: 'Tổng xe',       val: data.summary.tong_xe,                color: '#2563eb' },
-              { label: 'Xe vượt ĐM',    val: data.summary.xe_vuot_dm,             color: '#dc2626' },
-              { label: 'Tổng lít đổ',   val: fmtNum(data.summary.tong_lit_do, 1), color: '#7c3aed' },
-              { label: 'Tổng km',       val: fmtNum(data.summary.tong_km),         color: '#059669' },
-              { label: 'Tổng tiền (đ)', val: fmtNum(data.summary.tong_tien),       color: '#d97706' },
-            ].map(s => (
-              <div key={s.label} style={{ ...card, textAlign: 'center', marginBottom: 0 }}>
-                <div style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.val}</div>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{s.label}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {filtered.map(bs => {
+          const rows = byXe[bs];
+          const totalLit  = rows.reduce((s, r) => s + (r.so_luong || 0), 0);
+          const totalTien = rows.reduce((s, r) => s + (r.tong_dt || r.tien_hang || 0), 0);
+          const coPDF = rows.filter(r => r.co_pdf || pdfMap[normKy(r.ky_hieu_hd||'')+`|`+normSo(r.so_hd)]).length;
+          return (
+            <div key={bs} style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ background: '#f8fafc', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 600, fontSize: 15 }}>🚗 {bs}</span>
+                <div style={{ display: 'flex', gap: 16, fontSize: 13, color: '#555' }}>
+                  <span>{rows.length} HĐ</span>
+                  <span>⛽ {totalLit.toFixed(2)} lít</span>
+                  <span>💰 {fmtNum(Math.round(totalTien))} đ</span>
+                  <span style={{ color: coPDF === rows.length ? '#16a34a' : '#dc2626' }}>PDF: {coPDF}/{rows.length}</span>
+                </div>
               </div>
-            ))}
-          </div>
-
-          {/* Bảng tổng hợp */}
-          <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
-            <div style={{ padding: '8px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 12, color: '#64748b', display: 'flex', gap: 12, alignItems: 'center' }}>
-              <span>☑ Tick chọn xe → xuất CSV. Bấm vào hàng để xem chi tiết giao dịch ngay bên dưới.</span>
-              {nChecked > 0 && <span style={{ color: '#7c3aed', fontWeight: 600 }}>Đã chọn {nChecked} xe</span>}
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                <thead>
-                  <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e2e8f0' }}>
-                    <th style={{ padding: '8px 10px', width: 36 }}>
-                      <input type="checkbox" checked={allChecked} onChange={toggleAll} style={{ cursor: 'pointer' }} />
-                    </th>
-                    {[
-                      'Biển số','Tải trọng','ĐM (l/100km)','Km đầu','Km cuối','Km thực',
-                      'Tồn đầu (l)','Lít đổ','Tồn cuối (l)','Lít tiêu thụ',
-                      'ĐM tổng lít','TH thực (l/100km)','Chênh lệch',
-                      'Tiền hàng','Tổng DT','',
-                    ].map((h, i) => (
-                      <th key={i} style={{ padding: '8px 6px', textAlign: i >= 2 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap', fontSize: 11 }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(data.rows || []).map(r => {
-                    const isExp  = expanded === r.bien_so;
-                    const isCk   = checked.has(r.bien_so);
-                    const det    = cache[r.bien_so];
-                    return (
-                      <>
-                        <tr key={r.bien_so}
-                          onClick={() => toggleExpand(r.bien_so)}
-                          style={{
-                            borderBottom: isExp ? 'none' : '1px solid #f1f5f9',
-                            cursor: 'pointer',
-                            background: isExp ? '#dbeafe' : isCk ? '#f5f3ff' : r.vuot_dm ? '#fff7f7' : 'white',
-                          }}>
-                          <td style={{ padding: '7px 10px' }} onClick={e => e.stopPropagation()}>
-                            <input type="checkbox" checked={isCk} onChange={e => toggleCheck(e, r.bien_so)} style={{ cursor: 'pointer' }} />
-                          </td>
-                          <td style={{ padding: '7px 6px', fontWeight: 700, color: isExp ? '#1d4ed8' : '#2563eb' }}>{r.bien_so}</td>
-                          <td style={{ padding: '7px 6px', color: '#64748b' }}>{r.tai_trong}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right' }}>{r.dinh_muc ?? '—'}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right' }}>{fmtNum(r.km_dau)}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right' }}>{fmtNum(r.km_cuoi)}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(r.km_thuc)}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', color: '#64748b' }}>{fmtNum(r.ton_dau, 1)}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', color: '#7c3aed', fontWeight: 600 }}>{fmtNum(r.lit_do, 1)}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', color: '#64748b' }}>{fmtNum(r.ton_cuoi, 1)}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 700 }}>{fmtNum(r.lit_tieu_thu, 1)}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', color: '#64748b' }}>{r.dm_tong_lit != null ? fmtNum(r.dm_tong_lit, 1) : '—'}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 700, color: r.vuot_dm ? '#dc2626' : (r.tieu_hao_thuc != null ? '#059669' : '#94a3b8') }}>
-                            {r.tieu_hao_thuc != null ? fmtNum(r.tieu_hao_thuc, 1) : '—'}
-                          </td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 600, color: r.vuot_dm ? '#dc2626' : (r.chenh_lech != null && r.chenh_lech < 0 ? '#059669' : '#94a3b8') }}>
-                            {r.chenh_lech != null ? (r.chenh_lech > 0 ? `+${fmtNum(r.chenh_lech, 1)}` : fmtNum(r.chenh_lech, 1)) : '—'}
-                          </td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right' }}>{fmtNum(r.tien_hang)}</td>
-                          <td style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(r.tong_dt)}</td>
-                          <td style={{ padding: '7px 6px', whiteSpace: 'nowrap' }}>
-                            {r.vuot_dm && <span style={{ padding: '2px 5px', background: '#fee2e2', color: '#dc2626', borderRadius: 8, fontSize: 10, fontWeight: 700, marginRight: 4 }}>VƯỢT ĐM</span>}
-                            <span style={{ color: isExp ? '#1d4ed8' : '#94a3b8', fontSize: 11 }}>{isExp ? '▲' : '▼'}</span>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f1f5f9' }}>
+                      {['Ngày GD','Tài xế','Mặt hàng','Số lít','Tổng tiền','Ký hiệu HĐ','Số HĐ','Ngày HĐ','PDF'].map(h =>
+                        <th key={h} style={thS}>{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => {
+                      const key = normKy(r.ky_hieu_hd||'')+`|`+normSo(r.so_hd);
+                      const pdf = pdfMap[key];
+                      return (
+                        <tr key={i} style={{ background: i%2===0?'#fff':'#fafafa' }}>
+                          <td style={tdS}>{fmtDate(r.ngay_gd)}</td>
+                          <td style={tdS}>{r.ten_tai_xe}</td>
+                          <td style={tdS}>{r.mat_hang}</td>
+                          <td style={{ ...tdS, textAlign: 'right' }}>{r.so_luong?.toFixed(2)}</td>
+                          <td style={{ ...tdS, textAlign: 'right' }}>{fmtNum(Math.round(r.tong_dt||r.tien_hang||0))}</td>
+                          <td style={tdS}>{r.ky_hieu_hd}</td>
+                          <td style={tdS}>{r.so_hd}</td>
+                          <td style={tdS}>{fmtDate(r.ngay_hd)}</td>
+                          <td style={tdS}>
+                            {pdf ? (
+                              <button onClick={() => openPdf(pdf.pdfBase64)}
+                                style={{ background:'none',border:'none',cursor:'pointer',color:'#2563eb',fontSize:18 }}>📄</button>
+                            ) : r.co_pdf ? (
+                              <span style={{ fontSize:11,color:'#9ca3af' }}>Có (reload)</span>
+                            ) : (
+                              <span style={{ fontSize:11,color:'#dc2626' }}>Thiếu</span>
+                            )}
                           </td>
                         </tr>
-
-                        {/* ── Inline detail row ── */}
-                        {isExp && (
-                          <tr key={r.bien_so + '_det'}>
-                            <td colSpan={17} style={{ padding: 0, background: '#f0f7ff', borderBottom: '2px solid #2563eb' }}>
-                              <InlineDetail summaryRow={r} det={det} thang={thang} pdfMap={pdfMap} cpMap={cpMap} />
-                            </td>
-                          </tr>
-                        )}
-                      </>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ── Inline detail bên trong table ────────────────────────────────────────────
-function InlineDetail({ summaryRow: r, det, thang, pdfMap = {}, cpMap = {} }) {
-  const rows = det?.rows || [];
-  const isLoading = det?.loading !== false;
-  const detError  = det?.error || null;
-
-  const exportThis = () => {
-    if (!rows.length) return;
-    toCSV([DETAIL_HEADERS.map(([h]) => h), ...rows.map(d => detailRow(d, r.bien_so))],
-          `chi-tiet-xe_${r.bien_so}_${thang}.csv`);
-  };
-
-  // Gộp PDF các HĐ của xe này → trả về blob URL
-  const mergePDFs = async () => {
-    const keys = rows
-      .map(d => (d.ky_hieu_hd || '') + '|' + normSoHD(d.so_hd))
-      .filter(k => pdfMap[k]);
-    if (!keys.length) { alert('Không có hóa đơn PDF nào cho xe này'); return null; }
-    if (!window.PDFLib) { alert('PDF-lib chưa sẵn sàng'); return null; }
-    const { PDFDocument } = window.PDFLib;
-    const merged = await PDFDocument.create();
-    for (const k of keys) {
-      const e = pdfMap[k];
-      if (!e?.url) continue;
-      const buf = await fetch(e.url).then(r => r.arrayBuffer());
-      const doc = await PDFDocument.load(buf);
-      const pages = await merged.copyPages(doc, doc.getPageIndices());
-      pages.forEach(p => merged.addPage(p));
-    }
-    const bytes = await merged.save();
-    return URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-  };
-
-  const printVehiclePDFs = async () => {
-    try {
-      const url = await mergePDFs();
-      if (!url) return;
-      const win = window.open(url, '_blank');
-      if (win) win.addEventListener('load', () => { win.focus(); win.print(); });
-    } catch (err) { alert('Lỗi in PDF: ' + err.message); }
-  };
-
-  const downloadVehiclePDFs = async () => {
-    try {
-      const url = await mergePDFs();
-      if (!url) return;
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `HoaDon_${r.bien_so.replace(/[^A-Za-z0-9]/g,'_')}_${thang}.pdf`;
-      a.click();
-    } catch (err) { alert('Lỗi tải PDF: ' + err.message); }
-  };
-
-  // Đếm số HĐ có PDF cho xe này (chỉ tính khi rows đã load)
-  const pdfCount = rows.filter(d => pdfMap[(d.ky_hieu_hd || '') + '|' + normSoHD(d.so_hd)]).length;
-
-  return (
-    <div>
-      {/* Mini header */}
-      <div style={{ padding: '8px 16px', background: '#1e40af', color: 'white', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 700, fontSize: 14 }}>🚗 {r.bien_so}</span>
-        <span style={{ fontSize: 12, opacity: .8 }}>{r.tai_trong}</span>
-        <span style={{ fontSize: 12 }}>Km: <b>{fmtNum(r.km_dau)} → {fmtNum(r.km_cuoi)}</b> ({fmtNum(r.km_thuc)} km)</span>
-        <span style={{ fontSize: 12 }}>Lít đổ: <b>{fmtNum(r.lit_do, 1)}</b> | Tiêu thụ: <b>{fmtNum(r.lit_tieu_thu, 1)} l</b></span>
-        {r.tieu_hao_thuc != null && (
-          <span style={{ fontSize: 12 }}>
-            TH thực: <b style={{ color: r.vuot_dm ? '#fca5a5' : '#86efac' }}>{fmtNum(r.tieu_hao_thuc, 1)} l/100km</b>
-            {r.dinh_muc && <span style={{ opacity: .7 }}> / ĐM {r.dinh_muc}</span>}
-            {r.vuot_dm && <span style={{ marginLeft: 6, padding: '1px 7px', background: '#dc2626', borderRadius: 8, fontSize: 10, fontWeight: 700 }}>VƯỢT ĐM +{fmtNum(r.chenh_lech, 1)}</span>}
-          </span>
-        )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-          {!isLoading && pdfCount > 0 && (
-            <>
-              <button onClick={printVehiclePDFs}
-                style={{ padding: '4px 12px', background: '#7c3aed', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
-                🖨️ In {pdfCount} HĐ PDF
-              </button>
-              <button onClick={downloadVehiclePDFs}
-                style={{ padding: '4px 12px', background: '#0891b2', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
-                ⬇ Tải PDF gộp
-              </button>
-            </>
-          )}
-          {!isLoading && rows.length > 0 && (
-            <button onClick={() => generateVehicleReport(r, rows, thang, cpMap)}
-              style={{ padding: '4px 12px', background: '#d97706', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
-              📊 Xuất báo cáo Excel
-            </button>
-          )}
-          <button onClick={exportThis} disabled={!rows.length || isLoading}
-            style={{ padding: '4px 12px', background: '#059669', color: 'white', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600, opacity: rows.length ? 1 : 0.5 }}>
-            ⬇ Xuất CSV xe này
-          </button>
-        </div>
-      </div>
-
-      {isLoading && <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: 13 }}>Đang tải giao dịch...</div>}
-      {detError && <div style={{ padding: '10px 16px', color: '#dc2626', fontSize: 13 }}>❌ Lỗi tải giao dịch: {detError}</div>}
-
-      {!isLoading && (
-        <div style={{ overflowX: 'auto', maxHeight: 340 }}>
-          {!rows.length
-            ? <div style={{ padding: 20, color: '#94a3b8', textAlign: 'center', fontSize: 13 }}>Không có giao dịch</div>
-            : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
-                  <tr style={{ background: '#eff6ff', borderBottom: '2px solid #bfdbfe' }}>
-                    {DETAIL_HEADERS.slice(1).map(([h, right], i) => (
-                      <th key={i} style={{ padding: '6px 8px', textAlign: right ? 'right' : 'left', fontWeight: 600, color: '#1e40af', whiteSpace: 'nowrap' }}>{h}</th>
-                    ))}
-                    <th style={{ padding: '6px 8px', fontWeight: 600, color: '#1e40af', whiteSpace: 'nowrap' }}>PDF</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((d, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid #dbeafe', background: i % 2 === 0 ? 'white' : '#f0f7ff' }}>
-                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{fmtDateTime(d.ngay_gd)}</td>
-                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{d.ten_tai_xe || '—'}</td>
-                      <td style={{ padding: '4px 8px', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.don_vi_kd || '—'}</td>
-                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{d.mat_hang || '—'}</td>
-                      <td style={{ padding: '4px 8px' }}>{d.don_vi || '—'}</td>
-                      <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 700, color: '#7c3aed' }}>{fmtNum(d.so_luong_lit, 1)}</td>
-                      <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{fmtNum(d.gia_chua_ck)}</td>
-                      <td style={{ padding: '4px 8px', textAlign: 'right' }}>{fmtNum(d.tien_hang_chua_ck)}</td>
-                      <td style={{ padding: '4px 8px', textAlign: 'right', color: '#64748b' }}>{fmtNum(d.gia_co_ck)}</td>
-                      <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 600 }}>{fmtNum(d.tien_hang_co_ck)}</td>
-                      <td style={{ padding: '4px 8px' }}>{d.ky_hieu_hd || '—'}</td>
-                      <td style={{ padding: '4px 8px' }}>{d.so_hd || '—'}</td>
-                      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{fmtDate(d.ngay_hd)}</td>
-                      <td style={{ padding: '4px 8px', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.ten_dv_ban || '—'}</td>
-                      <td style={{ padding: '4px 8px' }}>{d.mst_dv_ban || '—'}</td>
-                      <td style={{ padding: '4px 8px' }}>
-                        {(() => {
-                          const k = (d.ky_hieu_hd || '') + '|' + normSoHD(d.so_hd);
-                          const e = pdfMap[k];
-                          return e ? (
-                            <div style={{ display:'flex', gap:3 }}>
-                              <button onClick={() => window.open(e.url, '_blank')}
-                                style={{ padding:'2px 7px', background:'#2563eb', color:'white', border:'none', borderRadius:4, cursor:'pointer', fontSize:10, fontWeight:600 }}>
-                                🔍
-                              </button>
-                              <button onClick={async () => {
-                                if (!window.PDFLib) return;
-                                const { PDFDocument } = window.PDFLib;
-                                const buf = await fetch(e.url).then(r => r.arrayBuffer());
-                                const doc = await PDFDocument.load(buf);
-                                const m = await PDFDocument.create();
-                                const pages = await m.copyPages(doc, doc.getPageIndices());
-                                pages.forEach(p => m.addPage(p));
-                                const bytes = await m.save();
-                                const url = URL.createObjectURL(new Blob([bytes], { type:'application/pdf' }));
-                                const w = window.open(url, '_blank');
-                                if (w) w.addEventListener('load', () => { w.focus(); w.print(); });
-                              }}
-                                style={{ padding:'2px 7px', background:'#7c3aed', color:'white', border:'none', borderRadius:4, cursor:'pointer', fontSize:10, fontWeight:600 }}>
-                                🖨️
-                              </button>
-                            </div>
-                          ) : null;
-                        })()}
-                      </td>
-                    </tr>
-                  ))}
-                  <tr style={{ background: '#dbeafe', borderTop: '2px solid #93c5fd', fontWeight: 700, fontSize: 11 }}>
-                    <td colSpan={4} style={{ padding: '5px 8px', color: '#1e40af' }}>TỔNG ({rows.length} GD)</td>
-                    <td style={{ padding: '5px 8px' }}></td>
-                    <td style={{ padding: '5px 8px', textAlign: 'right', color: '#7c3aed' }}>{fmtNum(rows.reduce((s,d) => s+(d.so_luong_lit||0),0),1)}</td>
-                    <td style={{ padding: '5px 8px' }}></td>
-                    <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmtNum(rows.reduce((s,d) => s+(d.tien_hang_chua_ck||0),0))}</td>
-                    <td style={{ padding: '5px 8px' }}></td>
-                    <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmtNum(rows.reduce((s,d) => s+(d.tien_hang_co_ck||0),0))}</td>
-                    <td colSpan={6} style={{ padding: '5px 8px' }}></td>
-                  </tr>
-                </tbody>
-              </table>
-            )
-          }
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════
-// Tab 2: IMPORT PVOIL
-// ══════════════════════════════════════════════════════════
-function TabImportPVOIL() {
-  const [thang, setThang]       = useState(thisMonth());
-  const [preview, setPreview]   = useState(null);
-  const [loading, setLoading]   = useState(false);
-  const [msg, setMsg]           = useState(null);
-
-  const onFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setMsg(null);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: 'array', cellDates: false });
-        const records = parsePVOIL(wb);
-        setPreview(records);
-        setMsg({ type: 'info', text: `Đọc được ${records.length} giao dịch. Nhấn "Import" để lưu.` });
-      } catch (err) {
-        setMsg({ type: 'error', text: 'Lỗi đọc file: ' + err.message });
-        setPreview(null);
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  };
-
-  const doImport = async () => {
-    if (!preview?.length) return;
-    setLoading(true); setMsg(null);
-    try {
-      const res  = await fetch('/api/nhien-lieu/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thang, records: preview, replace: true }),
-      });
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setMsg({ type: 'ok', text: `✅ Import thành công ${json.inserted} giao dịch vào tháng ${thang}.` });
-      setPreview(null);
-    } catch (err) {
-      setMsg({ type: 'error', text: 'Lỗi: ' + err.message });
-    }
-    setLoading(false);
-  };
-
-  return (
-    <div>
-      <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 15, color: '#1e293b' }}>Import bảng kê PVOIL</h3>
-        <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 16px' }}>
-          Upload file Excel từ PVOIL (BẢNG KÊ CHI TIẾT MUA HÀNG THEO KHÁCH). Hệ thống sẽ xóa dữ liệu cũ của tháng đã chọn rồi import mới.
-        </p>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div>
-            <label style={{ fontSize: 12, color: '#64748b', display: 'block', marginBottom: 4 }}>Tháng</label>
-            <input type="month" value={thang} onChange={e => setThang(e.target.value)} style={input} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, color: '#64748b', display: 'block', marginBottom: 4 }}>File PVOIL (.xls/.xlsx)</label>
-            <input type="file" accept=".xls,.xlsx" onChange={onFile} style={{ fontSize: 13 }} />
-          </div>
-          {preview?.length > 0 && (
-            <button onClick={doImport} disabled={loading} style={btn('#059669')}>
-              {loading ? 'Đang import...' : `⬆ Import ${preview.length} dòng`}
-            </button>
-          )}
-        </div>
-        {msg && (
-          <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 6, fontSize: 13,
-            background: msg.type === 'ok' ? '#f0fdf4' : msg.type === 'error' ? '#fef2f2' : '#eff6ff',
-            color:      msg.type === 'ok' ? '#166534' : msg.type === 'error' ? '#dc2626' : '#1d4ed8' }}>
-            {msg.text}
-          </div>
-        )}
-      </div>
-
-      {/* Preview table */}
-      {preview?.length > 0 && (
-        <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
-          <div style={{ padding: '10px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 13, color: '#64748b' }}>
-            Xem trước {preview.length} giao dịch (tháng {thang})
-          </div>
-          <div style={{ overflowX: 'auto', maxHeight: 400 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead style={{ position: 'sticky', top: 0, background: '#f8fafc', zIndex: 1 }}>
-                <tr>
-                  {['Biển số (chuẩn)','Biển số (gốc)','Ngày GD','Tên tài xế','Mặt hàng','Số lít','Tiền hàng (CK)','Ký hiệu HĐ','Số HĐ'].map((h,i) => (
-                    <th key={i} style={{ padding: '7px 8px', borderBottom: '1px solid #e2e8f0', textAlign: i >= 5 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {preview.slice(0, 100).map((r, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid #f1f5f9', background: i % 2 === 0 ? 'white' : '#f8fafc' }}>
-                    <td style={{ padding: '5px 8px', fontWeight: 600, color: '#2563eb' }}>{r.bien_so}</td>
-                    <td style={{ padding: '5px 8px', color: '#94a3b8' }}>{r.bien_so_raw}</td>
-                    <td style={{ padding: '5px 8px', whiteSpace: 'nowrap' }}>{r.ngay_gd ? fmtDateTime(new Date(r.ngay_gd)) : '—'}</td>
-                    <td style={{ padding: '5px 8px' }}>{r.ten_tai_xe || '—'}</td>
-                    <td style={{ padding: '5px 8px' }}>{r.mat_hang || '—'}</td>
-                    <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700 }}>{fmtNum(r.so_luong_lit, 1)}</td>
-                    <td style={{ padding: '5px 8px', textAlign: 'right' }}>{fmtNum(r.tien_hang_co_ck)}</td>
-                    <td style={{ padding: '5px 8px' }}>{r.ky_hieu_hd || '—'}</td>
-                    <td style={{ padding: '5px 8px' }}>{r.so_hd || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {preview.length > 100 && (
-              <div style={{ padding: '8px 16px', color: '#64748b', fontSize: 12 }}>
-                ... và {preview.length - 100} dòng nữa
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════
-// Tab 3: IMPORT KM ĐỊNH MỨC
-// ══════════════════════════════════════════════════════════
-function TabImportKm() {
-  const [thang, setThang]     = useState(thisMonth());
-  const [preview, setPreview] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [msg, setMsg]         = useState(null);
-  const [existing, setExisting] = useState(null);
-
-  useEffect(() => {
-    fetch(`/api/xe-km?thang=${thang}`)
-      .then(r => r.json())
-      .then(j => setExisting(j.rows || []));
-  }, [thang]);
-
-  const onFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setMsg(null);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: 'array', cellDates: false });
-        const records = parseKmDinhMuc(wb);
-        setPreview(records);
-        setMsg({ type: 'info', text: `Đọc được ${records.length} xe. Nhấn "Import" để lưu.` });
-      } catch (err) {
-        setMsg({ type: 'error', text: 'Lỗi đọc file: ' + err.message });
-        setPreview(null);
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  };
-
-  const doImport = async () => {
-    if (!preview?.length) return;
-    setLoading(true); setMsg(null);
-    try {
-      const res  = await fetch('/api/xe-km', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thang, records: preview }),
-      });
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setMsg({ type: 'ok', text: `✅ Cập nhật thành công ${json.upserted} xe vào tháng ${thang}.` });
-      setPreview(null);
-      // Reload existing
-      const r2 = await fetch(`/api/xe-km?thang=${thang}`);
-      const j2 = await r2.json();
-      setExisting(j2.rows || []);
-    } catch (err) {
-      setMsg({ type: 'error', text: 'Lỗi: ' + err.message });
-    }
-    setLoading(false);
-  };
-
-  return (
-    <div>
-      <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 15, color: '#1e293b' }}>Import Km & Định mức theo tháng</h3>
-        <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 16px' }}>
-          Upload file Excel định mức km (MAU_Km_dinh_muc_xe.xlsx). Dữ liệu sẽ được upsert theo biển số + tháng.
-          Định mức khoán (l/100km) cũng được cập nhật vào bảng xe.
-        </p>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div>
-            <label style={{ fontSize: 12, color: '#64748b', display: 'block', marginBottom: 4 }}>Tháng</label>
-            <input type="month" value={thang} onChange={e => setThang(e.target.value)} style={input} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, color: '#64748b', display: 'block', marginBottom: 4 }}>File Km định mức (.xlsx)</label>
-            <input type="file" accept=".xlsx,.xls" onChange={onFile} style={{ fontSize: 13 }} />
-          </div>
-          {preview?.length > 0 && (
-            <button onClick={doImport} disabled={loading} style={btn('#059669')}>
-              {loading ? 'Đang lưu...' : `⬆ Import ${preview.length} xe`}
-            </button>
-          )}
-        </div>
-        {msg && (
-          <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 6, fontSize: 13,
-            background: msg.type === 'ok' ? '#f0fdf4' : msg.type === 'error' ? '#fef2f2' : '#eff6ff',
-            color:      msg.type === 'ok' ? '#166534' : msg.type === 'error' ? '#dc2626' : '#1d4ed8' }}>
-            {msg.text}
-          </div>
-        )}
+            </div>
+          );
+        })}
       </div>
-
-      {/* Preview */}
-      {preview?.length > 0 && (
-        <div style={{ ...card, padding: 0, overflow: 'hidden', marginBottom: 16 }}>
-          <div style={{ padding: '10px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 13, color: '#64748b' }}>
-            Xem trước từ file (tháng {thang})
-          </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                {['Biển số','Tải trọng','Km đầu','Km cuối','Km thực','ĐM (l/100km)','Tồn đầu (l)','Tồn cuối (l)'].map((h,i) => (
-                  <th key={i} style={{ padding: '7px 10px', textAlign: i >= 2 ? 'right' : 'left', fontWeight: 600, color: '#475569' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {preview.map((r, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid #f1f5f9', background: i % 2 === 0 ? 'white' : '#f8fafc' }}>
-                  <td style={{ padding: '6px 10px', fontWeight: 600, color: '#2563eb' }}>{r.bien_so}</td>
-                  <td style={{ padding: '6px 10px', color: '#64748b' }}>{r.tai_trong || '—'}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(r.km_dau)}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(r.km_cuoi)}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700 }}>{fmtNum((r.km_cuoi||0)-(r.km_dau||0))}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', color: '#7c3aed' }}>{r.dinh_muc_l_100km ?? '—'}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_dau_lit ?? '—'}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_cuoi_lit ?? '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Dữ liệu hiện có trong DB */}
-      {existing?.length > 0 && (
-        <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
-          <div style={{ padding: '10px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 13, color: '#64748b' }}>
-            Dữ liệu hiện có tháng {thang} ({existing.length} xe)
-          </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                {['Biển số','Tải trọng','Km đầu','Km cuối','Km thực','ĐM (l/100km)','Tồn đầu (l)','Tồn cuối (l)'].map((h,i) => (
-                  <th key={i} style={{ padding: '7px 10px', textAlign: i >= 2 ? 'right' : 'left', fontWeight: 600, color: '#475569' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {existing.map((r, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid #f1f5f9', background: i % 2 === 0 ? 'white' : '#f8fafc' }}>
-                  <td style={{ padding: '6px 10px', fontWeight: 600, color: '#2563eb' }}>{r.bien_so}</td>
-                  <td style={{ padding: '6px 10px', color: '#64748b' }}>{r.tai_trong || '—'}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(r.km_dau)}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(r.km_cuoi)}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700 }}>{fmtNum((r.km_cuoi||0)-(r.km_dau||0))}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right', color: '#7c3aed' }}>{r.dinh_muc_l_100km ?? '—'}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_dau_lit ?? '—'}</td>
-                  <td style={{ padding: '6px 10px', textAlign: 'right' }}>{r.ton_cuoi_lit ?? '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
     </div>
   );
 }
 
+// ─── DoiChieuTab ─────────────────────────────────────────────────────────────
+function DoiChieuTab({ invoices }) {
+  const [filter, setFilter] = useState('all');
+  if (!invoices.length) return <p style={{ color:'#9ca3af',marginTop:40,textAlign:'center' }}>Chưa có dữ liệu.</p>;
 
-// ── Chuẩn hoá ký hiệu HĐ: bỏ mẫu số prefix ("1K26TDH" → "K26TDH", "1/K26TDH" → "K26TDH")
-function normalizeKyHieu(ky) {
-  if (!ky) return null;
-  return ky.replace(/^\d+[\/]?/, '').trim() || null;
-}
-
-// ── Extract text từ PDF (trang 1-2) dùng pdf.js ──────────────────────────────
-async function pdfToText(arrayBuffer) {
-  if (!window.pdfjsLib) return '';
-  try {
-    const pdf  = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const pages = Math.min(pdf.numPages, 2);
-    let text = '';
-    for (let i = 1; i <= pages; i++) {
-      const page    = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      text += content.items.map(it => it.str).join(' ') + ' ';
-    }
-    return text;
-  } catch (e) {
-    console.warn('[pdfToText]', e.message);
-    return '';
-  }
-}
-
-// ── Parse ký hiệu + số HĐ từ text nội dung hóa đơn điện tử ──────────────────
-// PVOIL format (pdfplumber/pdf.js):
-//   'Ký hiệu: 1K26TDH'
-//   'GIÁ TRỊ GIA TĂNG 12142'   ← số HĐ nằm ĐÂY (layout PDF column)
-//   'Số:'                        ← rỗng vì số đã bị "hút" lên dòng trên
-// Khi join thành 1 dòng: "...1K26TDH GIÁ TRỊ GIA TĂNG 12142 Số: Bản thể hiện..."
-function parseInvoiceText(text) {
-  const t = text.replace(/\s+/g, ' ');
-
-  // 1. Ký hiệu: "Ký hiệu: 1K26TDH" → normalizeKyHieu → "K26TDH"
-  let ky = null;
-  const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*[:\-]?\s*([A-Z0-9\/]{3,20})/u);
-  if (mKy) ky = normalizeKyHieu(mKy[1].trim());
-
-  // 2. Số HĐ (PVOIL): số xuất hiện TRƯỚC "Số:" trong text đã join
-  //    Pattern: "{digits} Số:" — số liền ngay trước nhãn "Số:"
-  let so = null;
-  const mBefore = t.match(/(\d{3,})\s+S[ốo]\s*[:\-]/iu);
-  if (mBefore) so = mBefore[1];
-
-  // 3. Fallback: "Số: {digits}" — format thông thường nếu không khớp pattern trên
-  if (!so) {
-    const mAfter = t.match(/\bS[ốo]\s*[:\-]\s*(\d{4,12})/iu);
-    if (mAfter) so = mAfter[1];
-  }
-
-  return { ky_hieu_hd: ky || null, so_hd: so || null };
-}
-
-// Chuẩn hoá số HĐ: bỏ leading zeros để so sánh ("00452244" → "452244")
-function normSoHD(s) {
-  if (!s) return '';
-  const n = parseInt(s, 10);
-  return isNaN(n) ? s : String(n);
-}
-
-// ── CDN constants ─────────────────────────────────────────────────────────────
-const CDN = {
-  JSZIP:      'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
-  PDFLIB:     'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
-  PDFJS:      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  PDFJS_W:    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
-};
-
-// ── TabHoaDonPDF ──────────────────────────────────────────────────────────────
-function TabHoaDonPDF({ pdfMap, setPdfMap }) {
-  const [thang,     setThang]    = useState(thisMonth());
-  const [dbRecs,    setDbRecs]   = useState(null);
-  const [phase,     setPhase]    = useState('idle');
-  const [progress,  setProgress] = useState('');
-  const [saved,     setSaved]    = useState(false);
-  const [filter,    setFilter]   = useState('all');
-  const [dbLoading, setDbLoading]= useState(false);
-  const [libsReady, setLibsReady]= useState(false);
-
-  // Load CDN libs: JSZip + PDFLib + PDF.js
-  useEffect(() => {
-    const load = (src) => new Promise((res, rej) => {
-      if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
-      const s = document.createElement('script');
-      s.src = src; s.onload = res; s.onerror = rej;
-      document.head.appendChild(s);
-    });
-    load(CDN.JSZIP)
-      .then(() => load(CDN.PDFLIB))
-      .then(() => load(CDN.PDFJS))
-      .then(() => {
-        // Cấu hình pdf.js worker
-        if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.PDFJS_W;
-        setLibsReady(true);
-      })
-      .catch(err => console.error('CDN load error:', err));
-  }, []);
-
-  // Tải danh sách HĐ từ DB
-  const loadDB = async (t) => {
-    setDbLoading(true); setDbRecs(null); setSaved(false);
-    try {
-      const res = await fetch('/api/nhien-lieu/hoa-don?thang=' + t);
-      if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        throw new Error('HTTP ' + res.status + ': ' + txt.slice(0, 150));
-      }
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setDbRecs(json.records || []);
-    } catch (err) {
-      setDbRecs([]);
-      alert('Lỗi tải dữ liệu: ' + err.message);
-    } finally {
-      setDbLoading(false);
-    }
+  const counts = {
+    all:    invoices.length,
+    khop:   invoices.filter(i => i.co_pdf && !i.lenh_canh_bao).length,
+    lech:   invoices.filter(i => i.co_pdf && i.lenh_canh_bao && i.lenh_canh_bao !== 'Không tìm thấy PDF').length,
+    thieu:  invoices.filter(i => !i.co_pdf).length,
   };
-
-  useEffect(() => { loadDB(thang); }, [thang]);
-
-  // Chọn thư mục đã giải nén → đọc tất cả PDF bên trong
-  const handleFolder = async (e) => {
-    const allFiles = Array.from(e.target.files);
-    const pdfs     = allFiles.filter(f => f.name.toLowerCase().endsWith('.pdf'));
-    if (!pdfs.length) { alert('Không tìm thấy file PDF nào trong thư mục đã chọn'); return; }
-    if (!libsReady)   { alert('Thư viện chưa sẵn sàng, thử lại sau vài giây'); return; }
-
-    setPhase('extracting');
-    setProgress('Tìm thấy ' + pdfs.length + ' file PDF, đang đọc nội dung...');
-    const newMap = {};
-    let failed   = 0;
-
-    for (let i = 0; i < pdfs.length; i++) {
-      const file = pdfs[i];
-      setProgress(`Đọc ${i + 1}/${pdfs.length}: ${file.name}`);
-      try {
-        const buf    = await file.arrayBuffer();
-        const text   = await pdfToText(buf);
-        const parsed = parseInvoiceText(text);
-
-        if (!parsed.ky_hieu_hd || !parsed.so_hd) {
-          console.warn('[HĐ folder] Không đọc được HĐ:', file.name,
-            '| text:', text.replace(/\s+/g,' ').slice(0, 150));
-          failed++;
-          continue;
-        }
-        const key = parsed.ky_hieu_hd + '|' + normSoHD(parsed.so_hd);
-        console.log('[HĐ folder]', file.name, '→', key);
-        newMap[key] = {
-          url: URL.createObjectURL(file),
-          name: file.name,
-          ky_hieu_hd: parsed.ky_hieu_hd,
-          so_hd: parsed.so_hd,
-        };
-      } catch (err) {
-        console.warn('[HĐ folder] Lỗi:', file.name, err.message);
-        failed++;
-      }
-    }
-
-    const ok = Object.keys(newMap).length;
-    console.log(`[HĐ folder] Tổng: ${pdfs.length} | Đọc được: ${ok} | Thất bại: ${failed}`);
-    setPdfMap(newMap);
-    setPhase('done');
-    setProgress(`Xong! ${ok}/${pdfs.length} hóa đơn` + (failed ? ` (${failed} không đọc được)` : ''));
-    e.target.value = '';
-  };
-
-  // Helper: gửi RAR/ZIP lên server API → nhận NDJSON stream → điền vào newMap
-  const processViaAPI = async (buf, filename, newMap) => {
-    const fd = new FormData();
-    fd.append('archive', new Blob([buf]), filename);
-    const res = await fetch('/api/nhien-lieu/unrar', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error('API lỗi ' + res.status);
-
-    const reader  = res.body.getReader();
-    const decoder = new TextDecoder();
-    let partial   = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      partial += decoder.decode(value, { stream: true });
-      const lines = partial.split('\n');
-      partial = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const obj = JSON.parse(line);
-          if (obj.progress) { setProgress(obj.progress); continue; }
-          if (obj.error)    { console.warn('[API unrar]', obj.error); continue; }
-          if (obj.done)     { continue; }
-          if (obj.ky_hieu_hd && obj.so_hd && obj.pdfBase64) {
-            const key   = obj.ky_hieu_hd + '|' + normSoHD(obj.so_hd);
-            const bytes = Uint8Array.from(atob(obj.pdfBase64), c => c.charCodeAt(0));
-            const blob  = new Blob([bytes], { type: 'application/pdf' });
-            newMap[key] = { url: URL.createObjectURL(blob), name: obj.name,
-              ky_hieu_hd: obj.ky_hieu_hd, so_hd: obj.so_hd };
-            setProgress(`Đã đọc ${Object.keys(newMap).length} hóa đơn...`);
-          }
-        } catch (_) {}
-      }
-    }
-  };
-
-  // Upload archive (ZIP hoặc RAR) → giải nén + build pdfMap
-  // ZIP: client dùng JSZip cho PDF/ZIP entries, gửi file RAR lên server API
-  // RAR: gửi thẳng lên server API
-  const handleFile = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!libsReady) { alert('Thư viện chưa sẵn sàng, thử lại sau vài giây'); return; }
-    setPhase('extracting'); setProgress('Đang xử lý...');
-
-    try {
-      const buf     = await file.arrayBuffer();
-      const lower   = file.name.toLowerCase();
-      const newMap  = {};
-
-      if (lower.endsWith('.rar')) {
-        // Toàn bộ file là RAR → gửi thẳng lên API
-        setProgress('Đang gửi lên server giải nén...');
-        await processViaAPI(buf, file.name, newMap);
-
-      } else if (lower.endsWith('.zip')) {
-        // Mở ZIP client-side
-        setProgress('Đang mở ZIP...');
-        const zip      = await window.JSZip.loadAsync(buf);
-        const pdfFiles = [];    // PDF entries từ ZIP
-        const rarFiles = [];    // RAR entries cần server xử lý
-
-        const scanZip = async (z) => {
-          const subs = [];
-          z.forEach((path, entry) => {
-            if (entry.dir) return;
-            const name  = path.split('/').pop();
-            const l     = name.toLowerCase();
-            if (l.endsWith('.pdf'))  pdfFiles.push({ name, entry });
-            else if (l.endsWith('.zip')) subs.push(entry);
-            else if (l.endsWith('.rar')) rarFiles.push({ name, entry });
-          });
-          for (const s of subs) {
-            const inner = await window.JSZip.loadAsync(await s.async('arraybuffer'));
-            await scanZip(inner);
-          }
-        };
-        await scanZip(zip);
-
-        // Xử lý file RAR (gửi từng file lên API)
-        for (const { name, entry } of rarFiles) {
-          setProgress(`Đang giải nén ${name} qua server...`);
-          const rarBuf = await entry.async('arraybuffer');
-          await processViaAPI(rarBuf, name, newMap);
-        }
-
-        // Xử lý PDF trực tiếp từ ZIP (client-side)
-        if (pdfFiles.length) {
-          setProgress(`Đọc ${pdfFiles.length} PDF từ ZIP...`);
-          for (let i = 0; i < pdfFiles.length; i++) {
-            const { name, entry } = pdfFiles[i];
-            setProgress(`Đọc ${i + 1}/${pdfFiles.length}: ${name}`);
-            try {
-              const pdfBuf = await entry.async('arraybuffer');
-              const text   = await pdfToText(pdfBuf);
-              const { ky_hieu_hd, so_hd } = parseInvoiceText(text);
-              if (ky_hieu_hd && so_hd) {
-                const key = ky_hieu_hd + '|' + normSoHD(so_hd);
-                newMap[key] = {
-                  url: URL.createObjectURL(new Blob([pdfBuf], { type: 'application/pdf' })),
-                  name, ky_hieu_hd, so_hd,
-                };
-              }
-            } catch (_) {}
-          }
-        }
-
-      } else {
-        setPhase('idle');
-        alert('Chỉ hỗ trợ file .zip hoặc .rar');
-        return;
-      }
-
-      const ok = Object.keys(newMap).length;
-      setPdfMap(newMap);
-      setPhase('done');
-      setProgress(`Xong! ${ok} hóa đơn`);
-    } catch (err) {
-      setPhase('idle');
-      alert('Lỗi: ' + err.message);
-    }
-    e.target.value = '';
-  };
-
-  // Mở PDF trong tab mới
-  const openPDF = (key) => {
-    const e = pdfMap[key];
-    if (e && e.url) window.open(e.url, '_blank');
-  };
-
-  // In một hoặc nhiều PDF
-  const printSelected = async (keys) => {
-    if (!window.PDFLib) { alert('PDF-lib chưa sẵn sàng'); return; }
-    const { PDFDocument } = window.PDFLib;
-    try {
-      const merged = await PDFDocument.create();
-      for (const k of keys) {
-        const e = pdfMap[k];
-        if (!e || !e.url) continue;
-        const resp = await fetch(e.url);
-        const buf  = await resp.arrayBuffer();
-        const doc  = await PDFDocument.load(buf);
-        const pages = await merged.copyPages(doc, doc.getPageIndices());
-        pages.forEach(p => merged.addPage(p));
-      }
-      const bytes = await merged.save();
-      const url   = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-      const win   = window.open(url, '_blank');
-      if (win) win.addEventListener('load', () => { win.focus(); win.print(); });
-    } catch (err) {
-      alert('Lỗi in: ' + err.message);
-    }
-  };
-
-  // Lưu vào DB
-  const handleSave = async () => {
-    const matched = (dbRecs || []).filter(r => pdfMap[(r.ky_hieu_hd || '') + '|' + normSoHD(r.so_hd)]);
-    if (!matched.length) return;
-    try {
-      const res  = await fetch('/api/nhien-lieu/hoa-don', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          save: true,
-          invoices: matched.map(r => ({
-            ky_hieu_hd: r.ky_hieu_hd,
-            so_hd:      r.so_hd,
-            pdf_file:   pdfMap[(r.ky_hieu_hd || '') + '|' + normSoHD(r.so_hd)].name,
-          })),
-        }),
-      });
-      const json = await res.json();
-      if (json.error) throw new Error(json.error);
-      setSaved(true);
-    } catch (err) {
-      alert('Lỗi lưu: ' + err.message);
-    }
-  };
-
-  // Danh sách hiển thị theo filter
-  const matchedKeys = new Set(
-    (dbRecs || [])
-      .filter(r => pdfMap[(r.ky_hieu_hd || '') + '|' + normSoHD(r.so_hd)])
-      .map(r => r.id)
-  );
-  const displayed = (dbRecs || []).filter(r => {
-    if (filter === 'co')   return matchedKeys.has(r.id);
-    if (filter === 'chua') return !matchedKeys.has(r.id);
+  const rows = invoices.filter(inv => {
+    if (filter === 'khop')  return inv.co_pdf && !inv.lenh_canh_bao;
+    if (filter === 'lech')  return inv.co_pdf && inv.lenh_canh_bao && inv.lenh_canh_bao !== 'Không tìm thấy PDF';
+    if (filter === 'thieu') return !inv.co_pdf;
     return true;
   });
 
-  const allMatchedKeys = displayed
-    .filter(r => pdfMap[(r.ky_hieu_hd || '') + '|' + normSoHD(r.so_hd)])
-    .map(r => (r.ky_hieu_hd || '') + '|' + normSoHD(r.so_hd));
+  return (
+    <div>
+      <div style={{ display:'flex',gap:8,marginBottom:16,flexWrap:'wrap' }}>
+        {[
+          { id:'all',   label:`Tất cả (${counts.all})`,                  c:'#374151' },
+          { id:'khop',  label:`✅ Khớp (${counts.khop})`,                 c:'#16a34a' },
+          { id:'lech',  label:`⚠️ Lệch thông tin (${counts.lech})`,       c:'#d97706' },
+          { id:'thieu', label:`❌ Thiếu PDF (${counts.thieu})`,            c:'#dc2626' },
+        ].map(f => (
+          <button key={f.id} onClick={() => setFilter(f.id)}
+            style={{ padding:'6px 14px',borderRadius:20,border:'1px solid',cursor:'pointer',fontSize:13,fontWeight:filter===f.id?600:400,
+              background:filter===f.id?f.c:'#fff',color:filter===f.id?'#fff':f.c,borderColor:f.c }}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ overflowX:'auto' }}>
+        <table style={{ width:'100%',borderCollapse:'collapse',fontSize:13 }}>
+          <thead>
+            <tr style={{ background:'#f1f5f9' }}>
+              {['Biển số','Ký hiệu','Số HĐ','Ngày HĐ','DVbh Excel','MST Excel','DVbh PDF','MST PDF','Trạng thái'].map(h =>
+                <th key={h} style={thS}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const st = !r.co_pdf ? 'thieu'
+                : (r.lenh_canh_bao && r.lenh_canh_bao !== 'Không tìm thấy PDF') ? 'lech' : 'khop';
+              const rowBg = st==='thieu'?'#fef2f2':st==='lech'?'#fffbeb':'#f0fdf4';
+              const mstLech = r.pdf_mst && r.mst_dv_ban &&
+                r.pdf_mst.replace(/\D/g,'') !== r.mst_dv_ban.replace(/\D/g,'');
+              return (
+                <tr key={i} style={{ background:i%2===0?rowBg:'#fff' }}>
+                  <td style={tdS}>{r.bien_so}</td>
+                  <td style={tdS}>{r.ky_hieu_hd}</td>
+                  <td style={tdS}>{r.so_hd}</td>
+                  <td style={tdS}>{fmtDate(r.ngay_hd)}</td>
+                  <td style={{ ...tdS,maxWidth:150,overflow:'hidden',textOverflow:'ellipsis' }}>{r.ten_dv_ban}</td>
+                  <td style={tdS}>{r.mst_dv_ban}</td>
+                  <td style={{ ...tdS,maxWidth:150,overflow:'hidden',textOverflow:'ellipsis' }}>{r.pdf_dvbh}</td>
+                  <td style={{ ...tdS,color:mstLech?'#dc2626':undefined }}>{r.pdf_mst}</td>
+                  <td style={tdS}>
+                    {st==='khop'  && <span style={{ color:'#16a34a',fontWeight:500 }}>✅ Khớp</span>}
+                    {st==='lech'  && <span style={{ color:'#d97706',fontWeight:500,fontSize:12 }}>⚠️ {r.lenh_canh_bao}</span>}
+                    {st==='thieu' && <span style={{ color:'#dc2626',fontWeight:500 }}>❌ Thiếu PDF</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── DinhMucTab ───────────────────────────────────────────────────────────────
+function DinhMucTab({ quotas, litByXe }) {
+  if (!quotas.length) return <p style={{ color:'#9ca3af',marginTop:40,textAlign:'center' }}>Chưa có dữ liệu định mức.</p>;
+
+  const rows = quotas.map(q => {
+    const km = (q.km_cuoi ?? 0) - (q.km_dau ?? 0);
+    const dm = q.dinh_muc_l_100km && km > 0 ? km * q.dinh_muc_l_100km / 100 : null;
+    const mua = litByXe[q.bien_so] || 0;
+    const tieuThu = (q.ton_dau_lit||0) + mua - (q.ton_cuoi_lit||0);
+    return { ...q, km_di: km, dm_lit: dm, thuc_mua: mua, tieu_thu: tieuThu, chenh: dm != null ? tieuThu - dm : null };
+  }).sort((a, b) => (b.chenh ?? -999) - (a.chenh ?? -999));
+
+  const xeKhongDM = Object.keys(litByXe).filter(bs => !quotas.find(q => q.bien_so === bs));
+  const overCount = rows.filter(r => (r.chenh??0) > 0).length;
+  const totalMua  = Object.values(litByXe).reduce((a,b)=>a+b,0);
 
   return (
     <div>
-      {/* Thanh điều khiển */}
-      <div style={{ ...card, display:'flex', alignItems:'center', gap:16, flexWrap:'wrap' }}>
-        <div>
-          <div style={{ fontSize:12, color:'#64748b', marginBottom:4 }}>Tháng</div>
-          <input type="month" value={thang} onChange={e => setThang(e.target.value)}
-            style={{ ...input, fontSize:14 }} />
-        </div>
-        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-          <div style={{ fontSize:12, color:'#64748b' }}>Upload hóa đơn PDF</div>
-          <label style={{ ...btn('#2563eb'), display:'inline-block', cursor:'pointer',
-            opacity: libsReady ? 1 : 0.5 }} title="Chọn file ZIP hoặc RAR chứa hóa đơn">
-            📦 Upload archive (.zip / .rar)
-            <input type="file" accept=".zip,.rar" onChange={handleFile}
-              disabled={!libsReady} style={{ display:'none' }} />
-          </label>
-          <div style={{ fontSize:11, color:'#94a3b8' }}>
-            Hỗ trợ ZIP + RAR lồng nhau, tự động giải nén
-          </div>
-        </div>
-        {phase === 'extracting' && (
-          <div style={{ fontSize:13, color:'#2563eb' }}>⏳ {progress}</div>
-        )}
-        {phase === 'done' && (
-          <div style={{ fontSize:13, color:'#16a34a' }}>✅ {progress}</div>
-        )}
-        <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
-          {allMatchedKeys.length > 0 && (
-            <button onClick={() => printSelected(allMatchedKeys)}
-              style={btn('#7c3aed')}>
-              🖨️ In {allMatchedKeys.length} HĐ có PDF
-            </button>
-          )}
-          <button onClick={() => loadDB(thang)} disabled={dbLoading}
-            style={btn('#6b7280')}>
-            {dbLoading ? '...' : '🔄 Tải lại'}
-          </button>
-        </div>
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,marginBottom:20 }}>
+        <StatCard label="Tổng xe có định mức" value={quotas.length} />
+        <StatCard label="Xe quá định mức" value={overCount} color="#dc2626" />
+        <StatCard label="Tổng lít đã mua" value={totalMua.toFixed(1)+' lít'} />
       </div>
-
-      {/* Thống kê */}
-      {dbRecs && (
-        <div style={{ ...card, display:'flex', gap:32, alignItems:'center', flexWrap:'wrap' }}>
-          <div>
-            <div style={{ fontSize:28, fontWeight:800 }}>{dbRecs.length}</div>
-            <div style={{ fontSize:12, color:'#64748b' }}>HĐ trong tháng</div>
-          </div>
-          <div>
-            <div style={{ fontSize:28, fontWeight:800, color:'#16a34a' }}>{matchedKeys.size}</div>
-            <div style={{ fontSize:12, color:'#64748b' }}>Có file PDF</div>
-          </div>
-          <div>
-            <div style={{ fontSize:28, fontWeight:800, color:'#ef4444' }}>
-              {dbRecs.length - matchedKeys.size}
-            </div>
-            <div style={{ fontSize:12, color:'#64748b' }}>Chưa có PDF</div>
-          </div>
-          <div>
-            <div style={{ fontSize:28, fontWeight:800, color:'#7c3aed' }}>
-              {Object.keys(pdfMap).length}
-            </div>
-            <div style={{ fontSize:12, color:'#64748b' }}>PDF đã upload</div>
-          </div>
-          <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
-            {['all','co','chua'].map(f => (
-              <button key={f} onClick={() => setFilter(f)}
-                style={{ ...btn(filter === f ? '#1e293b' : '#e2e8f0'),
-                  color: filter === f ? 'white' : '#1e293b' }}>
-                {f === 'all' ? 'Tất cả' : f === 'co' ? 'Có PDF' : 'Chưa có PDF'}
-              </button>
-            ))}
-          </div>
+      <div style={{ overflowX:'auto' }}>
+        <table style={{ width:'100%',borderCollapse:'collapse',fontSize:13 }}>
+          <thead>
+            <tr style={{ background:'#f1f5f9' }}>
+              {['Biển số','Km đầu','Km cuối','Km đi','lít/100km','Định mức (lít)','Tồn đầu','Tồn cuối','Đã mua','Tiêu thụ','Chênh lệch'].map(h =>
+                <th key={h} style={thS}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r,i) => {
+              const qua = (r.chenh??0) > 0;
+              return (
+                <tr key={i} style={{ background:qua?'#fef2f2':i%2===0?'#fff':'#fafafa' }}>
+                  <td style={{ ...tdS,fontWeight:600 }}>{r.bien_so}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{fmtNum(r.km_dau)}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{fmtNum(r.km_cuoi)}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{fmtNum(r.km_di)}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{r.dinh_muc_l_100km}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{r.dm_lit?.toFixed(2) ?? '—'}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{r.ton_dau_lit?.toFixed(2)}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{r.ton_cuoi_lit?.toFixed(2)}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{r.thuc_mua.toFixed(2)}</td>
+                  <td style={{ ...tdS,textAlign:'right' }}>{r.tieu_thu.toFixed(2)}</td>
+                  <td style={{ ...tdS,textAlign:'right',fontWeight:600,color:qua?'#dc2626':'#16a34a' }}>
+                    {r.chenh!=null ? (qua?'+':'')+r.chenh.toFixed(2) : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {xeKhongDM.length > 0 && (
+        <div style={{ marginTop:16,padding:'12px 16px',background:'#fef3c7',borderRadius:8,fontSize:13 }}>
+          ⚠️ Có hóa đơn nhưng không có định mức: <strong>{xeKhongDM.join(', ')}</strong>
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Debug: so sánh key khi không khớp */}
-      {/* Cảnh báo: PDF không tìm thấy trong DB (hóa đơn lạ / sai tháng) */}
-      {(() => {
-        const dbKeys = new Set((dbRecs || []).map(r => (r.ky_hieu_hd || '') + '|' + normSoHD(r.so_hd)));
-        const extra  = Object.entries(pdfMap).filter(([k]) => !dbKeys.has(k));
-        if (!extra.length) return null;
-        return (
-          <div style={{ ...card, background:'#fef3c7', border:'1px solid #f59e0b', fontSize:13 }}>
-            <strong>⚠️ {extra.length} hóa đơn PDF không khớp với dữ liệu Excel tháng {thang}</strong>
-            <div style={{ color:'#78350f', marginTop:4, marginBottom:8 }}>
-              Có thể sai tháng, sai số HĐ đọc được, hoặc chưa import vào DB.
-            </div>
-            <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-              {extra.map(([k, v]) => (
-                <div key={k} style={{ background:'#fde68a', borderRadius:6, padding:'4px 10px',
-                  display:'flex', alignItems:'center', gap:6 }}>
-                  <span style={{ fontFamily:'monospace', fontWeight:700 }}>
-                    {v.ky_hieu_hd} / {v.so_hd}
-                  </span>
-                  <button onClick={() => window.open(v.url, '_blank')}
-                    style={{ ...btn('#92400e'), padding:'2px 8px', fontSize:11 }}>
-                    🔍 Xem
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })()}
+// ─── InTab ────────────────────────────────────────────────────────────────────
+function InTab({ invoices, pdfMap }) {
+  const [selXe, setSelXe]     = useState('');
+  const [merging, setMerging] = useState(false);
+  const [status, setStatus]   = useState('');
 
-      {/* Bảng */}
-      {dbRecs && (
-        <div style={{ ...card, overflowX:'auto' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+  const byXe = invoices.reduce((acc, inv) => {
+    const bs = inv.bien_so || '(không rõ)';
+    if (!acc[bs]) acc[bs] = [];
+    acc[bs].push(inv);
+    return acc;
+  }, {});
+  const xeList = Object.keys(byXe).sort();
+  const rows = selXe ? (byXe[selXe] || []) : [];
+  const hasPdf = rows.filter(r => pdfMap[normKy(r.ky_hieu_hd||'')+`|`+normSo(r.so_hd)]);
+
+  async function handleMerge() {
+    setMerging(true);
+    setStatus('Đang tải pdf-lib...');
+    try {
+      const { PDFDocument } = await import('https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.esm.min.js');
+      const merged = await PDFDocument.create();
+      let count = 0;
+      for (const r of rows) {
+        const key = normKy(r.ky_hieu_hd||'')+`|`+normSo(r.so_hd);
+        const pdf = pdfMap[key];
+        if (!pdf?.pdfBase64) continue;
+        try {
+          const bytes = Uint8Array.from(atob(pdf.pdfBase64), c => c.charCodeAt(0));
+          const doc   = await PDFDocument.load(bytes, { ignoreEncryption:true });
+          const pages = await merged.copyPages(doc, doc.getPageIndices());
+          pages.forEach(p => merged.addPage(p));
+          count++;
+        } catch (e) { console.warn('skip PDF:', e.message); }
+      }
+      setStatus(`Đã gộp ${count} PDF...`);
+      const bytes = await merged.save();
+      const url   = URL.createObjectURL(new Blob([bytes],{type:'application/pdf'}));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `HoaDon_${selXe.replace(/[^a-zA-Z0-9]/g,'-')}.pdf`;
+      a.click();
+      setTimeout(()=>URL.revokeObjectURL(url),10000);
+      setStatus(`✅ Đã tạo file PDF với ${count} hóa đơn`);
+    } catch (err) {
+      setStatus(`❌ ${err.message}`);
+    } finally { setMerging(false); }
+  }
+
+  return (
+    <div>
+      <div style={{ display:'flex',alignItems:'center',gap:12,marginBottom:20,flexWrap:'wrap' }}>
+        <label style={{ fontSize:14,fontWeight:500 }}>Chọn xe:</label>
+        <select value={selXe} onChange={e => setSelXe(e.target.value)}
+          style={{ border:'1px solid #d1d5db',borderRadius:6,padding:'6px 10px',fontSize:14,minWidth:200 }}>
+          <option value="">-- Chọn biển số --</option>
+          {xeList.map(bs => <option key={bs} value={bs}>{bs} ({byXe[bs].length} HĐ)</option>)}
+        </select>
+        {selXe && (
+          <button onClick={handleMerge} disabled={merging || hasPdf.length===0}
+            style={{ padding:'8px 20px',background:merging?'#9ca3af':'#2563eb',color:'#fff',
+              border:'none',borderRadius:6,cursor:'pointer',fontSize:14,fontWeight:600 }}>
+            {merging ? '⏳ Đang gộp...' : `🖨️ Gộp & tải PDF (${hasPdf.length} file)`}
+          </button>
+        )}
+        {status && <span style={{ fontSize:13,color:'#555' }}>{status}</span>}
+      </div>
+
+      {selXe && rows.length > 0 && (
+        <div>
+          <p style={{ fontSize:13,color:'#6b7280',marginBottom:12 }}>
+            {hasPdf.length}/{rows.length} hóa đơn có PDF trong phiên này
+            {hasPdf.length < rows.length && <span style={{ color:'#d97706' }}> — upload lại archive để đủ PDF</span>}
+          </p>
+          <table style={{ width:'100%',borderCollapse:'collapse',fontSize:13 }}>
             <thead>
-              <tr style={{ borderBottom:'2px solid #e2e8f0', background:'#f8fafc' }}>
-                {['#','MST ĐV xuất','Ký hiệu HĐ','Số HĐ','Biển số xe',
-                  'Lái xe','Ngày HĐ','Số lít','File PDF','Xem / In'].map(h => (
-                  <th key={h} style={{ padding:'10px 12px', textAlign:'left',
-                    fontWeight:600, color:'#475569', whiteSpace:'nowrap' }}>{h}</th>
-                ))}
+              <tr style={{ background:'#f1f5f9' }}>
+                {['Ngày GD','Ký hiệu','Số HĐ','Số lít','PDF'].map(h=><th key={h} style={thS}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
-              {displayed.map((r, i) => {
-                const mapKey   = (r.ky_hieu_hd || '') + '|' + normSoHD(r.so_hd);
-                const pdfEntry = pdfMap[mapKey];
+              {rows.map((r,i) => {
+                const key = normKy(r.ky_hieu_hd||'')+`|`+normSo(r.so_hd);
+                const pdf = pdfMap[key];
                 return (
-                  <tr key={r.id}
-                    style={{ borderBottom:'1px solid #f1f5f9',
-                      background: pdfEntry ? '#f0fdf4' : 'white' }}>
-                    <td style={{ padding:'8px 12px', color:'#9ca3af' }}>{i + 1}</td>
-                    <td style={{ padding:'8px 12px', fontFamily:'monospace', fontSize:11 }}>
-                      {r.mst_dv_ban || '—'}
-                    </td>
-                    <td style={{ padding:'8px 12px', fontWeight:700 }}>
-                      {r.ky_hieu_hd || '—'}
-                    </td>
-                    <td style={{ padding:'8px 12px', fontFamily:'monospace', fontWeight:600 }}>
-                      {r.so_hd || '—'}
-                    </td>
-                    <td style={{ padding:'8px 12px', fontWeight:600, color:'#2563eb' }}>
-                      {r.bien_so || '—'}
-                    </td>
-                    <td style={{ padding:'8px 12px' }}>{r.ten_tai_xe || '—'}</td>
-                    <td style={{ padding:'8px 12px', color:'#64748b' }}>
-                      {fmtDate(r.ngay_hd)}
-                    </td>
-                    <td style={{ padding:'8px 12px', textAlign:'right' }}>
-                      {r.so_luong_lit != null ? fmtNum(r.so_luong_lit, 2) : '—'}
-                    </td>
-                    <td style={{ padding:'8px 12px', fontSize:11,
-                      color: pdfEntry ? '#16a34a' : '#9ca3af' }}>
-                      {pdfEntry
-                        ? <span title={pdfEntry.name}>
-                            {'✅ ' + (pdfEntry.name.length > 22
-                              ? pdfEntry.name.slice(0, 20) + '…'
-                              : pdfEntry.name)}
-                          </span>
-                        : '—'}
-                    </td>
-                    <td style={{ padding:'8px 12px' }}>
-                      {pdfEntry && (
-                        <div style={{ display:'flex', gap:4 }}>
-                          <button onClick={() => openPDF(mapKey)}
-                            style={{ ...btn('#2563eb'), padding:'3px 10px', fontSize:11 }}>
-                            🔍 Xem
-                          </button>
-                          <button onClick={() => printSelected([mapKey])}
-                            style={{ ...btn('#7c3aed'), padding:'3px 10px', fontSize:11 }}>
-                            🖨️ In
-                          </button>
-                        </div>
-                      )}
+                  <tr key={i} style={{ background:i%2===0?'#fff':'#fafafa' }}>
+                    <td style={tdS}>{fmtDate(r.ngay_gd)}</td>
+                    <td style={tdS}>{r.ky_hieu_hd}</td>
+                    <td style={tdS}>{r.so_hd}</td>
+                    <td style={{ ...tdS,textAlign:'right' }}>{r.so_luong?.toFixed(2)}</td>
+                    <td style={tdS}>
+                      {pdf
+                        ? <button onClick={()=>openPdf(pdf.pdfBase64)}
+                            style={{ background:'none',border:'none',cursor:'pointer',color:'#2563eb',fontSize:20 }}>📄</button>
+                        : <span style={{ fontSize:11,color:'#9ca3af' }}>—</span>
+                      }
                     </td>
                   </tr>
                 );
@@ -1557,216 +551,243 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
           </table>
         </div>
       )}
-
-      {/* Lưu vào DB */}
-      {matchedKeys.size > 0 && (
-        <div style={{ display:'flex', gap:8, alignItems:'center', marginTop:8 }}>
-          <button onClick={handleSave} disabled={saved}
-            style={btn(saved ? '#6b7280' : '#16a34a')}>
-            {saved ? '✅ Đã lưu vào DB' : '💾 Lưu kết quả vào DB'}
-          </button>
-          {saved && (
-            <span style={{ color:'#16a34a', fontSize:13 }}>
-              Đã cập nhật pdf_file cho {matchedKeys.size} hóa đơn
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 }
 
-// ── Parse Chi phí phát sinh Excel ────────────────────────────────────────────
-// Format: header 2 dòng (merged), cột biển số + 7 cột chi phí
-// Tự phát hiện header row, tự map cột theo keyword
-function parseCPFile(workbook) {
-  const ws = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
-
-  // Tìm dòng header chứa 'biển số' hoặc 'bien so'
-  let hRow = -1;
-  for (let i = 0; i < rows.length; i++) {
-    const vals = rows[i].map(c => String(c || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d'));
-    if (vals.some(v => v.includes('bien so') || v.includes('bien ks'))) { hRow = i; break; }
-  }
-  if (hRow === -1) throw new Error('Không tìm thấy cột "Biển số" trong file');
-
-  // Gộp 2 dòng header thành chuỗi key để nhận diện cột
-  const h1 = rows[hRow]   || [];
-  const h2 = rows[hRow+1] || [];
-  const headers = h1.map((v, i) => {
-    const combined = String(v || '') + ' ' + String(h2[i] || '');
-    return combined.toLowerCase()
-      .normalize('NFD').replace(/[̀-ͯ]/g,'')
-      .replace(/đ/g,'d').replace(/\s+/g,' ').trim();
+// ─── Main Page ────────────────────────────────────────────────────────────────
+export default function NhienLieuPage() {
+  const [thang, setThang]       = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
   });
+  const [tab, setTab]           = useState('upload');
+  const [logs, setLogs]         = useState([]);
+  const [processing, setProc]   = useState(false);
+  const [invoices, setInvoices] = useState([]);
+  const [quotas, setQuotas]     = useState([]);
+  const [chiPhi, setChiPhi]     = useState([]);
+  const [pdfMap, setPdfMap]     = useState({});
 
-  const norm = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim();
+  const refArchive = useRef(null);
+  const refDinhMuc = useRef(null);
+  const refChiPhi  = useRef(null);
+  const refPvoil   = useRef(null);
 
-  // Tìm index cột theo keywords
-  const findCol = (...keywords) => headers.findIndex(h => keywords.every(k => h.includes(norm(k))));
+  const log = useCallback(msg => setLogs(p => [...p, msg]), []);
 
-  const colBS       = findCol('bien');
-  const colNBCau    = findCol('noi bo', 'cau');
-  const colNBBen    = findCol('noi bo', 'ben');
-  const colNBBoc    = findCol('noi bo', 'boc');
-  const colTinhCau  = findCol('tinh', 'cau');
-  const colTinhBen  = findCol('tinh', 'ben');
-  const colTinhBoc  = findCol('tinh', 'boc');
-  const colRua      = findCol('rua');
-
-  const toNum = v => {
-    if (v == null) return 0;
-    const n = parseFloat(String(v).replace(/[^\d.-]/g,''));
-    return isNaN(n) ? 0 : n;
-  };
-
-  const result = {};
-  const dataStart = hRow + (h2.some(v => v) ? 2 : 1);
-
-  for (let i = dataStart; i < rows.length; i++) {
-    const row = rows[i];
-    const rawBS = row[colBS];
-    if (!rawBS) continue;
-    const bs = String(rawBS).toUpperCase().replace(/[-.\s]/g,'');
-    if (bs.length < 4) continue;
-
-    result[bs] = {
-      cp_nb_caudong:   colNBCau   >= 0 ? toNum(row[colNBCau])   : 0,
-      cp_nb_ben:       colNBBen   >= 0 ? toNum(row[colNBBen])   : 0,
-      cp_nb_bocxep:    colNBBoc   >= 0 ? toNum(row[colNBBoc])   : 0,
-      cp_tinh_caudong: colTinhCau >= 0 ? toNum(row[colTinhCau]) : 0,
-      cp_tinh_ben:     colTinhBen >= 0 ? toNum(row[colTinhBen]) : 0,
-      cp_tinh_bocxep:  colTinhBoc >= 0 ? toNum(row[colTinhBoc]) : 0,
-      cp_ruaxe:        colRua     >= 0 ? toNum(row[colRua])     : 0,
-    };
-  }
-  return result;
-}
-
-// ══════════════════════════════════════════════════════════
-// Tab Chi phí phát sinh
-// ══════════════════════════════════════════════════════════
-function TabChiPhi({ cpMap, setCpMap }) {
-  const [preview, setPreview] = useState(null);
-  const [msg, setMsg]         = useState(null);
-
-  const onFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setMsg(null);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
+  useEffect(() => {
+    async function load() {
       try {
-        const wb = XLSX.read(ev.target.result, { type: 'array', cellDates: false });
-        const parsed = parseCPFile(wb);
-        setPreview(parsed);
-        setMsg({ type: 'info', text: `Đọc được ${Object.keys(parsed).length} xe. Nhấn "Áp dụng" để dùng cho báo cáo tháng này.` });
-      } catch (err) {
-        setMsg({ type: 'error', text: 'Lỗi đọc file: ' + err.message });
-        setPreview(null);
+        const res = await fetch(`/api/nhien-lieu/bao-cao?thang=${thang}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.invoices?.length) {
+          setInvoices(data.invoices);
+          setQuotas(data.quotas || []);
+          setChiPhi(data.chiPhi || []);
+          setTab('danh-sach');
+        } else {
+          setInvoices([]); setQuotas([]); setChiPhi([]);
+          setTab('upload');
+        }
+      } catch (_) {}
+    }
+    load();
+  }, [thang]);
+
+  async function handleProcess() {
+    setProc(true);
+    setLogs([]);
+    const newPdfMap = {};
+    try {
+      const XLSX = (await import('xlsx')).default;
+
+      // 1. PVoil Excel
+      if (!refPvoil.current?.files[0]) throw new Error('Chưa chọn file Danh sách hóa đơn (PVoil) *');
+      const pvoilWb = XLSX.read(new Uint8Array(await refPvoil.current.files[0].arrayBuffer()));
+      const invoiceList = parsePvoilExcel(pvoilWb, XLSX);
+      log(`✅ Danh sách HĐ PVoil: ${invoiceList.length} dòng`);
+
+      // 2. Định mức
+      let quotaList = [];
+      if (refDinhMuc.current?.files[0]) {
+        const dmWb = XLSX.read(new Uint8Array(await refDinhMuc.current.files[0].arrayBuffer()));
+        quotaList = parseDinhMucExcel(dmWb, XLSX);
+        log(`✅ Định mức: ${quotaList.length} xe`);
       }
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = '';
-  };
 
-  const apply = () => {
-    if (!preview) return;
-    setCpMap(preview);
-    setMsg({ type: 'ok', text: `✅ Đã áp dụng chi phí cho ${Object.keys(preview).length} xe. Vào tab Báo cáo tháng để xuất Excel.` });
-  };
+      // 3. Chi phí
+      let cpList = [];
+      if (refChiPhi.current?.files[0]) {
+        const cpWb = XLSX.read(new Uint8Array(await refChiPhi.current.files[0].arrayBuffer()));
+        cpList = parseChiPhiExcel(cpWb, XLSX);
+        log(`✅ Chi phí phát sinh: ${cpList.length} khoản`);
+      }
 
-  const hasCpMap = Object.keys(cpMap).length > 0;
+      // 4. Archive → PDF stream
+      if (refArchive.current?.files[0]) {
+        const archFile = refArchive.current.files[0];
+        log(`📦 Tải archive (${(archFile.size/1024/1024).toFixed(1)} MB)...`);
+        const fd = new FormData();
+        fd.append('archive', new Blob([await archFile.arrayBuffer()]), archFile.name);
+        const res = await fetch('/api/nhien-lieu/unrar', { method:'POST', body:fd });
+        if (!res.ok) throw new Error('Lỗi API giải nén');
+
+        const reader = res.body.getReader();
+        const dec    = new TextDecoder();
+        let partial  = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          partial += dec.decode(value, { stream:true });
+          const lines = partial.split('\n');
+          partial = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              if (obj.progress) { log(`⏳ ${obj.progress}`); continue; }
+              if (obj.error)    { log(`⚠️ ${obj.error}`);   continue; }
+              if (obj.done)     { log(`✅ Giải nén xong: ${obj.total} file PDF`); continue; }
+              if (obj.ky_hieu_hd && obj.so_hd) {
+                const key = normKy(obj.ky_hieu_hd)+`|`+normSo(obj.so_hd);
+                newPdfMap[key] = { dvbh:obj.dvbh, mst:obj.mst, pdfBase64:obj.pdfBase64, name:obj.name };
+              }
+            } catch (_) {}
+          }
+        }
+        log(`📄 Đọc được ${Object.keys(newPdfMap).length} PDF có ký hiệu + số HĐ`);
+        setPdfMap(newPdfMap);
+      } else {
+        log('ℹ️ Không có file nén — bỏ qua bước đọc PDF');
+      }
+
+      // 5. Merge PDF data vào danh sách Excel
+      const merged = invoiceList.map(inv => {
+        const key = normKy(inv.ky_hieu_hd||'')+`|`+normSo(inv.so_hd);
+        const pdf = newPdfMap[key];
+        let canh_bao = null;
+        if (!pdf) {
+          canh_bao = 'Không tìm thấy PDF';
+        } else {
+          const warns = [];
+          const exMST = (inv.mst_dv_ban||'').replace(/\D/g,'');
+          const pdMST = (pdf.mst||'').replace(/\D/g,'');
+          if (exMST && pdMST && exMST !== pdMST)
+            warns.push(`MST lệch (PDF: ${pdf.mst}, Excel: ${inv.mst_dv_ban})`);
+          if (warns.length) canh_bao = warns.join('; ');
+        }
+        return { ...inv, co_pdf:!!pdf, pdf_dvbh:pdf?.dvbh??null, pdf_mst:pdf?.mst??null, lenh_canh_bao:canh_bao };
+      });
+
+      const coPDF  = merged.filter(m=>m.co_pdf).length;
+      const lech   = merged.filter(m=>m.lenh_canh_bao&&m.lenh_canh_bao!=='Không tìm thấy PDF').length;
+      log(`🔗 Đối chiếu: ${coPDF}/${merged.length} có PDF | ${merged.length-coPDF} thiếu PDF | ${lech} lệch thông tin`);
+
+      // 6. Lưu Supabase
+      log('💾 Đang lưu vào Supabase...');
+      const upRes = await fetch('/api/nhien-lieu/upload', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ thang, invoices:merged, quotas:quotaList, chiPhi:cpList }),
+      });
+      const upData = await upRes.json();
+      if (!upRes.ok) throw new Error(upData.error||'Lỗi lưu Supabase');
+      log(`✅ Đã lưu: ${upData.saved.invoices} HĐ · ${upData.saved.quotas} xe · ${upData.saved.chiPhi} chi phí`);
+
+      setInvoices(merged);
+      setQuotas(quotaList);
+      setChiPhi(cpList);
+      setTab('danh-sach');
+
+    } catch (err) {
+      log(`❌ Lỗi: ${err.message}`);
+    } finally {
+      setProc(false);
+    }
+  }
+
+  const litByXe = invoices.reduce((acc, inv) => {
+    if (inv.bien_so && inv.so_luong) acc[inv.bien_so] = (acc[inv.bien_so]||0) + inv.so_luong;
+    return acc;
+  }, {});
+
+  const TABS = [
+    { id:'upload',    label:'📤 Upload' },
+    { id:'danh-sach', label:'📋 Danh sách HĐ' },
+    { id:'doi-chieu', label:'🔍 Đối chiếu' },
+    { id:'dinh-muc',  label:'⛽ Định mức' },
+    { id:'in',        label:'🖨️ In HĐ' },
+  ];
 
   return (
-    <div>
-      <div style={card}>
-        <h3 style={{ margin: '0 0 8px', fontSize: 15, color: '#1e293b' }}>Chi phí phát sinh ngoại lộ</h3>
-        <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 16px' }}>
-          Upload file Excel chi phí phát sinh (cầu đường, bến bãi, bốc xếp, rửa xe per xe).
-          Dữ liệu chỉ lưu trong phiên làm việc — cần upload lại mỗi lần.
-          Sau khi áp dụng, nút "Xuất báo cáo Excel" trong Báo cáo tháng sẽ điền đầy đủ phần B/C/D.
-        </p>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div>
-            <label style={{ fontSize: 12, color: '#64748b', display: 'block', marginBottom: 4 }}>File CP phát sinh (.xlsx)</label>
-            <input type="file" accept=".xlsx,.xls" onChange={onFile} style={{ fontSize: 13 }} />
-          </div>
-          {preview && (
-            <button onClick={apply} style={btn('#059669')}>
-              ✅ Áp dụng cho báo cáo
-            </button>
-          )}
-          {hasCpMap && !preview && (
-            <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 600 }}>
-              ✅ Đang dùng CP cho {Object.keys(cpMap).length} xe
-            </div>
-          )}
+    <div style={{ fontFamily:'system-ui,sans-serif',maxWidth:1280,margin:'0 auto',padding:16 }}>
+      {/* Header */}
+      <div style={{ display:'flex',alignItems:'center',gap:16,marginBottom:20,flexWrap:'wrap' }}>
+        <h1 style={{ margin:0,fontSize:22,fontWeight:600 }}>Quản lý nhiên liệu</h1>
+        <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+          <label style={{ fontSize:13,color:'#666' }}>Tháng:</label>
+          <input type="month" value={thang} onChange={e => setThang(e.target.value)}
+            style={{ border:'1px solid #ccc',borderRadius:6,padding:'4px 8px',fontSize:14 }} />
         </div>
-        {msg && (
-          <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 6, fontSize: 13,
-            background: msg.type === 'ok' ? '#f0fdf4' : msg.type === 'error' ? '#fef2f2' : '#eff6ff',
-            color:      msg.type === 'ok' ? '#166534' : msg.type === 'error' ? '#dc2626' : '#1d4ed8' }}>
-            {msg.text}
-          </div>
+        {invoices.length > 0 && (
+          <span style={{ fontSize:13,color:'#555',background:'#f0f0f0',padding:'4px 10px',borderRadius:12 }}>
+            {invoices.length} hóa đơn · {Object.keys(litByXe).length} xe
+          </span>
         )}
       </div>
 
-      {/* Preview */}
-      {preview && (
-        <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
-          <div style={{ padding: '10px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 13, color: '#64748b' }}>
-            Xem trước {Object.keys(preview).length} xe từ file
+      {/* Tab bar */}
+      <div style={{ display:'flex',gap:4,borderBottom:'2px solid #e5e7eb',marginBottom:20 }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            style={{ padding:'8px 16px',border:'none',background:'none',cursor:'pointer',fontSize:14,
+              fontWeight:tab===t.id?600:400,color:tab===t.id?'#2563eb':'#555',
+              borderBottom:tab===t.id?'2px solid #2563eb':'2px solid transparent',marginBottom:-2 }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Upload tab */}
+      {tab === 'upload' && (
+        <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:20 }}>
+          <div>
+            <h2 style={{ fontSize:16,fontWeight:600,marginBottom:16 }}>Chọn file upload</h2>
+            <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
+              <FileInput label="📦 File nén (ZIP / RAR)" accept=".zip,.rar,.7z" ref={refArchive}
+                hint="Chứa tất cả hóa đơn PDF (có thể nhiều cấp nén)" />
+              <FileInput label="📊 Danh sách hóa đơn PVoil" accept=".xlsx,.xls" ref={refPvoil}
+                hint="File Excel do PVoil gửi — biển số, ký hiệu, số HĐ" required />
+              <FileInput label="📏 Định mức xăng dầu" accept=".xlsx,.xls" ref={refDinhMuc}
+                hint="Km đầu/cuối, định mức lít/100km, tồn đầu/cuối" />
+              <FileInput label="💰 Chi phí phát sinh" accept=".xlsx,.xls" ref={refChiPhi}
+                hint="Chi phí phát sinh theo biển số xe" />
+            </div>
+            <button onClick={handleProcess} disabled={processing}
+              style={{ marginTop:20,width:'100%',padding:'12px 0',
+                background:processing?'#9ca3af':'#2563eb',color:'#fff',
+                border:'none',borderRadius:8,fontSize:15,fontWeight:600,
+                cursor:processing?'not-allowed':'pointer' }}>
+              {processing ? '⏳ Đang xử lý...' : '🚀 Xử lý dữ liệu'}
+            </button>
           </div>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                  {['Biển số','NB - Cầu đường','NB - Bến','NB - Bốc xếp',
-                    'Tỉnh - Cầu đường','Tỉnh - Bến','Tỉnh - Bốc xếp','Rửa xe','Tổng CP'].map((h,i) => (
-                    <th key={i} style={{ padding: '7px 10px', textAlign: i > 0 ? 'right' : 'left', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(preview).map(([bs, cp], i) => {
-                  const total = Object.values(cp).reduce((s,v) => s+(v||0), 0);
-                  return (
-                    <tr key={bs} style={{ borderBottom: '1px solid #f1f5f9', background: i % 2 === 0 ? 'white' : '#f8fafc' }}>
-                      <td style={{ padding: '6px 10px', fontWeight: 600, color: '#2563eb' }}>{bs}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_caudong)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_ben)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_nb_bocxep)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_caudong)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_ben)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_tinh_bocxep)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right' }}>{fmtNum(cp.cp_ruaxe)}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#d97706' }}>{fmtNum(total)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div>
+            <h2 style={{ fontSize:16,fontWeight:600,marginBottom:16 }}>Tiến trình</h2>
+            <div style={{ background:'#0f172a',color:'#e2e8f0',borderRadius:8,padding:'12px 16px',
+              minHeight:300,fontFamily:'monospace',fontSize:13,overflowY:'auto',maxHeight:500 }}>
+              {logs.length === 0
+                ? <span style={{ color:'#64748b' }}>Chọn file và nhấn "Xử lý dữ liệu"...</span>
+                : logs.map((l,i) => <div key={i} style={{ marginBottom:4 }}>{l}</div>)}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Hướng dẫn format file */}
-      <div style={{ ...card, background: '#fffbeb', border: '1px solid #fcd34d' }}>
-        <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#92400e' }}>📋 Định dạng file Excel chi phí phát sinh</h4>
-        <p style={{ fontSize: 12, color: '#78350f', margin: 0, lineHeight: 1.6 }}>
-          File cần có cột <b>Biển số</b> và các cột chi phí. Hệ thống tự phát hiện header (kể cả 2 dòng header gộp ô).
-          Tên cột cần chứa từ khóa:<br/>
-          — <b>Nội bộ + Cầu đường</b>: lệ phí cầu đường chuyến nội bộ<br/>
-          — <b>Nội bộ + Bến</b>: phí vào bến nội bộ<br/>
-          — <b>Nội bộ + Bốc</b>: phí bốc xếp nội bộ<br/>
-          — <b>Tỉnh + Cầu đường</b>: lệ phí cầu đường chuyến tỉnh<br/>
-          — <b>Tỉnh + Bến</b>: phí vào bến tỉnh<br/>
-          — <b>Tỉnh + Bốc</b>: phí bốc xếp tỉnh<br/>
-          — <b>Rửa</b>: chi phí rửa xe
-        </p>
-      </div>
+      {tab === 'danh-sach' && <DanhSachTab invoices={invoices} pdfMap={pdfMap} />}
+      {tab === 'doi-chieu' && <DoiChieuTab invoices={invoices} />}
+      {tab === 'dinh-muc'  && <DinhMucTab  quotas={quotas} litByXe={litByXe} />}
+      {tab === 'in'        && <InTab        invoices={invoices} pdfMap={pdfMap} />}
     </div>
   );
 }
