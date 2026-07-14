@@ -1183,71 +1183,127 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
     e.target.value = '';
   };
 
-  // Giải nén ZIP → đọc text từ từng PDF → build pdfMap
+  // Helper: gửi RAR/ZIP lên server API → nhận NDJSON stream → điền vào newMap
+  const processViaAPI = async (buf, filename, newMap) => {
+    const fd = new FormData();
+    fd.append('archive', new Blob([buf]), filename);
+    const res = await fetch('/api/nhien-lieu/unrar', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('API lỗi ' + res.status);
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let partial   = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      partial += decoder.decode(value, { stream: true });
+      const lines = partial.split('\n');
+      partial = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.progress) { setProgress(obj.progress); continue; }
+          if (obj.error)    { console.warn('[API unrar]', obj.error); continue; }
+          if (obj.done)     { continue; }
+          if (obj.ky_hieu_hd && obj.so_hd && obj.pdfBase64) {
+            const key   = obj.ky_hieu_hd + '|' + normSoHD(obj.so_hd);
+            const bytes = Uint8Array.from(atob(obj.pdfBase64), c => c.charCodeAt(0));
+            const blob  = new Blob([bytes], { type: 'application/pdf' });
+            newMap[key] = { url: URL.createObjectURL(blob), name: obj.name,
+              ky_hieu_hd: obj.ky_hieu_hd, so_hd: obj.so_hd };
+            setProgress(`Đã đọc ${Object.keys(newMap).length} hóa đơn...`);
+          }
+        } catch (_) {}
+      }
+    }
+  };
+
+  // Upload archive (ZIP hoặc RAR) → giải nén + build pdfMap
+  // ZIP: client dùng JSZip cho PDF/ZIP entries, gửi file RAR lên server API
+  // RAR: gửi thẳng lên server API
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     if (!libsReady) { alert('Thư viện chưa sẵn sàng, thử lại sau vài giây'); return; }
-    setPhase('extracting'); setProgress('Đang giải nén ZIP...');
+    setPhase('extracting'); setProgress('Đang xử lý...');
+
     try {
-      const zip      = await window.JSZip.loadAsync(await file.arrayBuffer());
-      const pdfFiles = [];
+      const buf     = await file.arrayBuffer();
+      const lower   = file.name.toLowerCase();
+      const newMap  = {};
 
-      // Thu thập tất cả PDF (bao gồm ZIP lồng nhau) — bỏ qua XML và file khác
-      const scan = async (z) => {
-        const subs = [];
-        z.forEach((path, entry) => {
-          if (entry.dir) return;
-          const name  = path.split('/').pop();
-          const lower = name.toLowerCase();
-          if (lower.endsWith('.pdf'))  pdfFiles.push({ name, entry });
-          else if (lower.endsWith('.zip')) subs.push(entry);
-        });
-        for (const s of subs) await scan(await window.JSZip.loadAsync(await s.async('arraybuffer')));
-      };
-      await scan(zip);
+      if (lower.endsWith('.rar')) {
+        // Toàn bộ file là RAR → gửi thẳng lên API
+        setProgress('Đang gửi lên server giải nén...');
+        await processViaAPI(buf, file.name, newMap);
 
-      if (!pdfFiles.length) { setPhase('idle'); alert('Không tìm thấy file PDF trong ZIP'); return; }
+      } else if (lower.endsWith('.zip')) {
+        // Mở ZIP client-side
+        setProgress('Đang mở ZIP...');
+        const zip      = await window.JSZip.loadAsync(buf);
+        const pdfFiles = [];    // PDF entries từ ZIP
+        const rarFiles = [];    // RAR entries cần server xử lý
 
-      setProgress('Đọc nội dung ' + pdfFiles.length + ' hóa đơn PDF...');
-      const newMap = {};
-      let failed = 0;
-
-      for (let i = 0; i < pdfFiles.length; i++) {
-        const { name, entry } = pdfFiles[i];
-        setProgress(`Đọc ${i + 1}/${pdfFiles.length}: ${name}`);
-        try {
-          const buf    = await entry.async('arraybuffer');
-          const text   = await pdfToText(buf);
-          const parsed = parseInvoiceText(text);
-
-          if (!parsed.ky_hieu_hd || !parsed.so_hd) {
-            console.warn('[HĐ] Không đọc được thông tin HĐ:', name,
-              '| text mẫu:', text.replace(/\s+/g, ' ').slice(0, 200));
-            failed++;
-            continue;
+        const scanZip = async (z) => {
+          const subs = [];
+          z.forEach((path, entry) => {
+            if (entry.dir) return;
+            const name  = path.split('/').pop();
+            const l     = name.toLowerCase();
+            if (l.endsWith('.pdf'))  pdfFiles.push({ name, entry });
+            else if (l.endsWith('.zip')) subs.push(entry);
+            else if (l.endsWith('.rar')) rarFiles.push({ name, entry });
+          });
+          for (const s of subs) {
+            const inner = await window.JSZip.loadAsync(await s.async('arraybuffer'));
+            await scanZip(inner);
           }
+        };
+        await scanZip(zip);
 
-          const key = parsed.ky_hieu_hd + '|' + normSoHD(parsed.so_hd);
-          console.log('[HĐ]', name, '→', key);
-          newMap[key] = {
-            url: URL.createObjectURL(new Blob([buf], { type: 'application/pdf' })),
-            name, ky_hieu_hd: parsed.ky_hieu_hd, so_hd: parsed.so_hd,
-          };
-        } catch (err) {
-          console.warn('[HĐ] Lỗi:', name, err.message);
-          failed++;
+        // Xử lý file RAR (gửi từng file lên API)
+        for (const { name, entry } of rarFiles) {
+          setProgress(`Đang giải nén ${name} qua server...`);
+          const rarBuf = await entry.async('arraybuffer');
+          await processViaAPI(rarBuf, name, newMap);
         }
+
+        // Xử lý PDF trực tiếp từ ZIP (client-side)
+        if (pdfFiles.length) {
+          setProgress(`Đọc ${pdfFiles.length} PDF từ ZIP...`);
+          for (let i = 0; i < pdfFiles.length; i++) {
+            const { name, entry } = pdfFiles[i];
+            setProgress(`Đọc ${i + 1}/${pdfFiles.length}: ${name}`);
+            try {
+              const pdfBuf = await entry.async('arraybuffer');
+              const text   = await pdfToText(pdfBuf);
+              const { ky_hieu_hd, so_hd } = parseInvoiceText(text);
+              if (ky_hieu_hd && so_hd) {
+                const key = ky_hieu_hd + '|' + normSoHD(so_hd);
+                newMap[key] = {
+                  url: URL.createObjectURL(new Blob([pdfBuf], { type: 'application/pdf' })),
+                  name, ky_hieu_hd, so_hd,
+                };
+              }
+            } catch (_) {}
+          }
+        }
+
+      } else {
+        setPhase('idle');
+        alert('Chỉ hỗ trợ file .zip hoặc .rar');
+        return;
       }
 
       const ok = Object.keys(newMap).length;
-      console.log(`[HĐ ZIP] Tổng: ${pdfFiles.length} | Đọc được: ${ok} | Thất bại: ${failed}`);
       setPdfMap(newMap);
       setPhase('done');
-      setProgress(`Xong! Đọc được ${ok}/${pdfFiles.length} hóa đơn` + (failed ? ` (${failed} không đọc được)` : ''));
+      setProgress(`Xong! ${ok} hóa đơn`);
     } catch (err) {
       setPhase('idle');
-      alert('Lỗi xử lý ZIP: ' + err.message);
+      alert('Lỗi: ' + err.message);
     }
     e.target.value = '';
   };
@@ -1334,25 +1390,14 @@ function TabHoaDonPDF({ pdfMap, setPdfMap }) {
         </div>
         <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
           <div style={{ fontSize:12, color:'#64748b' }}>Upload hóa đơn PDF</div>
-          <div style={{ display:'flex', gap:8 }}>
-            {/* Chọn thư mục đã giải nén (khuyến nghị) */}
-            <label style={{ ...btn('#16a34a'), display:'inline-block', cursor:'pointer',
-              opacity: libsReady ? 1 : 0.5 }} title="Giải nén archive ra thư mục trước, rồi chọn thư mục đó">
-              📂 Chọn thư mục
-              <input type="file" webkitdirectory="true" multiple onChange={handleFolder}
-                disabled={!libsReady} style={{ display:'none' }} />
-            </label>
-            {/* ZIP — upload output_pdf.zip từ script giải nén */}
-            <label style={{ ...btn('#2563eb'), display:'inline-block', cursor:'pointer',
-              opacity: libsReady ? 1 : 0.5 }} title="Upload file output_pdf.zip tạo bởi giai-nen-hoadon.py">
-              📦 Chọn ZIP
-              <input type="file" accept=".zip" onChange={handleFile}
-                disabled={!libsReady} style={{ display:'none' }} />
-            </label>
-          </div>
-          <div style={{ fontSize:11, color:'#64748b' }}>
-            💡 Bước 1: <code style={{background:'#f1f5f9',padding:'1px 4px',borderRadius:3}}>python giai-nen-hoadon.py "HD HH 06.zip"</code>
-            &nbsp;→ Bước 2: upload <strong>output_pdf.zip</strong>
+          <label style={{ ...btn('#2563eb'), display:'inline-block', cursor:'pointer',
+            opacity: libsReady ? 1 : 0.5 }} title="Chọn file ZIP hoặc RAR chứa hóa đơn">
+            📦 Upload archive (.zip / .rar)
+            <input type="file" accept=".zip,.rar" onChange={handleFile}
+              disabled={!libsReady} style={{ display:'none' }} />
+          </label>
+          <div style={{ fontSize:11, color:'#94a3b8' }}>
+            Hỗ trợ ZIP + RAR lồng nhau, tự động giải nén
           </div>
         </div>
         {phase === 'extracting' && (
