@@ -649,15 +649,28 @@ export default function NhienLieuPage() {
               const obj = JSON.parse(line);
               if (obj.progress) { log(`⏳ ${obj.progress}`); continue; }
               if (obj.error)    { log(`⚠️ ${obj.error}`);   continue; }
-              if (obj.done)     { log(`✅ Giải nén xong: ${obj.total} file PDF`); continue; }
-              if (obj.ky_hieu_hd && obj.so_hd) {
-                const key = normKy(obj.ky_hieu_hd)+`|`+normSo(obj.so_hd);
-                newPdfMap[key] = { dvbh:obj.dvbh, mst:obj.mst, pdfBase64:obj.pdfBase64, name:obj.name };
+              if (obj.done)     {
+                const matched   = Object.keys(newPdfMap).filter(k => !k.startsWith('__')).length;
+                const unmatched = Object.keys(newPdfMap).filter(k => k.startsWith('__')).length;
+                log(`✅ Giải nén xong: ${obj.total} file PDF | nhận dạng được ${matched} | không đọc được ${unmatched}`);
+                continue;
+              }
+              if (obj.pdfBase64) {
+                if (obj.ky_hieu_hd && obj.so_hd) {
+                  // PDF nhận dạng được → dùng ký hiệu|số làm key để đối chiếu Excel
+                  const key = normKy(obj.ky_hieu_hd)+'|'+normSo(obj.so_hd);
+                  newPdfMap[key] = { dvbh:obj.dvbh, mst:obj.mst, pdfBase64:obj.pdfBase64, name:obj.name };
+                } else {
+                  // PDF không đọc được ký hiệu/số → lưu theo tên file
+                  newPdfMap['__unmatched__|'+obj.name] = { pdfBase64:obj.pdfBase64, name:obj.name };
+                }
               }
             } catch (_) {}
           }
         }
-        log(`📄 Đọc được ${Object.keys(newPdfMap).length} PDF có ký hiệu + số HĐ`);
+        const matchedCnt   = Object.keys(newPdfMap).filter(k => !k.startsWith('__')).length;
+        const unmatchedCnt = Object.keys(newPdfMap).filter(k => k.startsWith('__')).length;
+        log(`📄 Tổng: ${matchedCnt + unmatchedCnt} PDF | đối chiếu được: ${matchedCnt} | không đọc được: ${unmatchedCnt}`);
         setPdfMap(newPdfMap);
       } else {
         log('ℹ️ Không có file nén — bỏ qua bước đọc PDF');

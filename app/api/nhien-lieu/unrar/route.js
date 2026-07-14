@@ -2,9 +2,11 @@
  * POST /api/nhien-lieu/unrar
  * Nhận 1 file RAR/ZIP, giải nén đệ quy, trả về NDJSON:
  * { name, ky_hieu_hd, so_hd, dvbh, mst, pdfBase64 }
+ * Gửi TẤT CẢ PDF - kể cả không parse được ky_hieu/so_hd
  */
 
 import { join }        from 'path';
+import { tmpdir }      from 'os';
 import { mkdirSync, writeFileSync, rmSync, readFileSync,
          readdirSync, chmodSync }    from 'fs';
 import { execFile }    from 'child_process';
@@ -36,6 +38,7 @@ async function pdfToText(buf) {
 // ── Invoice text parser ───────────────────────────────────────────────────────
 function normalizeKyHieu(ky) {
   if (!ky) return null;
+  // Bỏ phần số đầu (mẫu số) VD: "1/K26TDY" → "K26TDY"
   return ky.replace(/^\d+[\/]?/, '').trim() || null;
 }
 
@@ -44,16 +47,28 @@ function parseInvoiceText(rawText) {
 
   // ── Ký hiệu ──
   let ky_hieu_hd = null;
-  const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*[:\-]?\s*([A-Z0-9\/]{3,20})/u);
+  // Mẫu 1: "Ký hiệu: K26TDY" hoặc "Ký hiệu hóa đơn: ..."
+  const mKy = t.match(/[Kk][yý]\s*hi[eệ]u\s*(?:h[oó]a\s*đ[ơo]n\s*)?[:\-]?\s*([A-Z0-9\/]{3,20})/u);
   if (mKy) ky_hieu_hd = normalizeKyHieu(mKy[1].trim());
+  // Mẫu 2: pattern riêng "K2..." trước dãy số
+  if (!ky_hieu_hd) {
+    const mKy2 = t.match(/\b(K\d{2}[A-Z]{2,5})\b/);
+    if (mKy2) ky_hieu_hd = mKy2[1];
+  }
 
-  // ── Số HĐ (xuất hiện TRƯỚC "Số:" trong PDF PVoil) ──
+  // ── Số HĐ ──
   let so_hd = null;
+  // Mẫu: số xuất hiện trước "Số:" (layout PVOIL: "75552 Số:")
   const mBefore = t.match(/(\d{3,})\s+S[ốo]\s*[:\-]/iu);
   if (mBefore) so_hd = mBefore[1];
   if (!so_hd) {
     const mAfter = t.match(/\bS[ốo]\s*[:\-]\s*(\d{4,12})/iu);
     if (mAfter) so_hd = mAfter[1];
+  }
+  // Mẫu 3: "Số hóa đơn: ..."
+  if (!so_hd) {
+    const mHD = t.match(/S[ốo]\s*h[oó]a\s*đ[ơo]n\s*[:\-]?\s*(\d{4,12})/iu);
+    if (mHD) so_hd = mHD[1];
   }
 
   // ── Đơn vị bán hàng ──
@@ -65,12 +80,16 @@ function parseInvoiceText(rawText) {
 
   // ── Mã số thuế ──
   let mst = null;
-  // Cố thử "Mã số thuế: ..." hoặc "MST: ..."
   const mMST = t.match(/M[ãa]\s*s[ốo]\s*thu[eế]\s*[:\-]?\s*(\d[\d\-]{9,14})/iu)
             || t.match(/\bMST\s*[:\-]?\s*(\d[\d\-]{9,14})/i);
   if (mMST) mst = mMST[1].replace(/-/g, '').trim();
 
-  return { ky_hieu_hd: ky_hieu_hd || null, so_hd: so_hd || null, dvbh: dvbh || null, mst: mst || null };
+  return {
+    ky_hieu_hd: ky_hieu_hd || null,
+    so_hd:      so_hd      || null,
+    dvbh:       dvbh       || null,
+    mst:        mst        || null,
+  };
 }
 
 // ── Walk helpers ──────────────────────────────────────────────────────────────
@@ -118,7 +137,8 @@ export async function POST(req) {
       { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
-  const tmpDir  = join('/tmp', 'unrar-' + randomUUID());
+  // Dùng os.tmpdir() thay vì hardcode '/tmp' (Windows compatible)
+  const tmpDir  = join(tmpdir(), 'unrar-' + randomUUID());
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -148,27 +168,29 @@ export async function POST(req) {
           }
         }
 
-        // Thu thập và parse từng PDF
+        // Thu thập tất cả PDF
         const pdfs = walkPdfs(outDir);
-        send({ progress: `Tìm thấy ${pdfs.length} file PDF, đang đọc...` });
+        send({ progress: `Tìm thấy ${pdfs.length} file PDF, đang đọc nội dung...` });
 
         let processed = 0;
+        let parsed    = 0;
         for (const { name, path } of pdfs) {
           try {
             const pdfBuf = readFileSync(path);
             const text   = await pdfToText(pdfBuf);
             const { ky_hieu_hd, so_hd, dvbh, mst } = parseInvoiceText(text);
             processed++;
+            if (ky_hieu_hd && so_hd) parsed++;
             if (processed % 10 === 0) {
-              send({ progress: `Đã đọc ${processed}/${pdfs.length} PDF...` });
+              send({ progress: `Đã đọc ${processed}/${pdfs.length} PDF (nhận dạng được ${parsed})...` });
             }
-            if (ky_hieu_hd && so_hd) {
-              send({ name, ky_hieu_hd, so_hd, dvbh, mst, pdfBase64: pdfBuf.toString('base64') });
-            }
+            // Gửi TẤT CẢ PDF - kể cả không parse được ky_hieu/so_hd
+            // Client sẽ đối chiếu thủ công nếu cần
+            send({ name, ky_hieu_hd, so_hd, dvbh, mst, pdfBase64: pdfBuf.toString('base64') });
           } catch (_) {}
         }
 
-        send({ done: true, total: pdfs.length });
+        send({ done: true, total: pdfs.length, parsed });
       } catch (e) {
         send({ error: e.message });
       } finally {
